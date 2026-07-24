@@ -1,0 +1,49 @@
+flowchart TD
+  %% STLQ large-pipeline state/stage flow.
+
+  Start(["stlq_main / config"])
+  Bootstrap["Config bootstrap\napply eval_only / defaults"]
+  TrainDecision{"train.enabled?"}
+  TrainFlow["Train quantizer flow\nsrc/pipeline/stlq_train_quantizer_flow.cpp"]
+  TrainInit["Streaming train init\nsrc/quantizer/streaming_train_init_stages.cpp"]
+  TrainRounds["Streaming train rounds\nsrc/quantizer/streaming_train_round_stages.cpp"]
+  InitLinkage["Init-linkage build\nsrc/linkage/linkage_init_streaming_builder.cpp"]
+  TrainStore["Train artifact store\nresult IO / snapshots / hashes"]
+
+  LargeDecision{"large.enabled?"}
+  NonLarge["Non-large flow\nsrc/pipeline/stlq_non_large_pipeline_flow.cpp"]
+  LargeFlow["Large pipeline flow\nsrc/pipeline/stlq_large_pipeline_flow.cpp"]
+
+  BaseDecision{"base.encode.enabled?"}
+  BaseBasic["Base basic encode\nsrc/quantizer/encode_base_streaming.cpp"]
+  BaseList["Base list-order store\nsrc/io/base_list_store.cpp"]
+
+  LinkageDecision{"base.linkage.enabled?"}
+  BaseLinkage["Base-linkage build\nsrc/linkage/linkage_base_streaming_builder.cpp"]
+  LinkageStore["linkage_list + optional coeff codec\nsrc/io/linkage_list_store.cpp\nsrc/io/linkage_coeff_codec_store.cpp"]
+  Cleanup["Staged cleanup\nsrc/pipeline/large_store_lifecycle.cpp"]
+
+  EvalDecision{"eval enabled?"}
+  EvalPlan["Eval plan\nsrc/pipeline/stlq_large_eval_plan.cpp"]
+  EvalRun["Disk recall / linkage eval\nsrc/pipeline/stlq_large_eval_execute.cpp\nsrc/eval/*"]
+  Archive["Logs / metrics / eval archive\nsrc/pipeline/stlq_large_eval_archive.cpp"]
+  Done(["done"])
+
+  Start --> Bootstrap --> TrainDecision
+  TrainDecision -- yes --> TrainFlow --> TrainInit --> InitLinkage --> TrainRounds --> TrainStore
+  TrainDecision -- no --> TrainStore
+  TrainStore --> LargeDecision
+
+  LargeDecision -- no --> NonLarge --> EvalDecision
+  LargeDecision -- yes --> LargeFlow --> BaseDecision
+
+  BaseDecision -- yes --> BaseBasic --> BaseList
+  BaseDecision -- no --> BaseList
+
+  BaseList --> LinkageDecision
+  LinkageDecision -- yes --> BaseLinkage --> LinkageStore --> Cleanup
+  LinkageDecision -- no --> LinkageStore
+
+  Cleanup --> EvalDecision
+  EvalDecision -- yes --> EvalPlan --> EvalRun --> Archive --> Done
+  EvalDecision -- no --> Done

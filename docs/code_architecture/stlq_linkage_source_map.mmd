@@ -1,0 +1,42 @@
+flowchart TB
+  %% Linkage source organization after the streaming builder refactor.
+
+  Header["include/stlq/linkage/linkage_streaming_builders.h\npublic streaming builder declarations"]
+
+  Base["src/linkage/linkage_base_streaming_builder.cpp\nbase-linkage streaming orchestration"]
+  Init["src/linkage/linkage_init_streaming_builder.cpp\ninit-linkage streaming orchestration"]
+  Cluster["src/linkage/linkage_cluster_builders.inc\nshared cluster-local topology algorithms"]
+  Support["src/linkage/linkage_streaming_support.cpp\nasync prefetch / checkpoint / workbuf / precomp helpers"]
+  CodecRebuild["src/linkage/linkage_coeff_codec_rebuild.cpp\neval-only coeff codec rebuild"]
+
+  Legacy["src/linkage/linkage_builder.cpp\nlegacy/non-large linkage builder"]
+  Recon["src/linkage/linkage_reconstruction.cpp\nlinkage reconstruction helpers"]
+  Virtual["src/linkage/virtual_augment.cpp\nvirtual-node augmentation"]
+  Hnsw["src/linkage/hnsw_cluster_knn.cpp\ncluster KNN/HNSW helpers"]
+  GpuSched["src/linkage/linkage_gpu_scheduler.cpp\nGPU scheduling support"]
+  CudaEval["src/linkage/eval_candidates_cuda.cu\nCUDA candidate evaluation"]
+  CudaEncode["src/linkage/linkage_encode_cuda.cu\nCUDA linkage encode kernels"]
+
+  Header --> Base
+  Header --> Init
+  Header --> CodecRebuild
+
+  Base --> Cluster
+  Init --> Cluster
+  Base --> Support
+  Init --> Support
+  CodecRebuild --> Support
+
+  Cluster --> Hnsw
+  Cluster --> Virtual
+  Cluster --> Recon
+  Cluster --> GpuSched
+  Cluster --> CudaEval
+  Cluster --> CudaEncode
+
+  Base --> CodecStore["src/io/linkage_coeff_codec_store.cpp\nsrc/io/linkage_list_store.cpp"]
+  CodecRebuild --> CodecStore
+  Base --> Coeff["src/coeff/*\ncoeff quantization / Huffman"]
+  CodecRebuild --> Coeff
+
+  Legacy -. separate path .-> Recon

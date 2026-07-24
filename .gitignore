@@ -1,0 +1,15 @@
+*.h5
+**/build*/
+**/cmake-build*/
+*.so
+**/so/
+**/dataset*/
+**/outputs_opt/
+**/tmp_opt/
+**/outputs*/
+**/.tmp*/
+**/tmp*/
+**/.test*/
+**/__pycache__/
+*.pyc
+**/.idea/

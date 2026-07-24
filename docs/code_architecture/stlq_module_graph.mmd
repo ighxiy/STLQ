@@ -1,0 +1,55 @@
+flowchart LR
+  %% STLQ high-level source module graph.
+  %% Render with Mermaid CLI or any Markdown viewer that supports Mermaid.
+
+  App["app / executable\nstlq_main"]
+  API["include/stlq/stlq.h\nlibrary-facing API"]
+
+  Pipeline["src/pipeline\nstage orchestration"]
+  Quantizer["src/quantizer\ntraining + base encode"]
+  Linkage["src/linkage\ninit/base linkage builders"]
+  Eval["src/eval\nrecall + disk eval"]
+  IO["src/io\ndataset + artifact stores"]
+  Coeff["src/coeff\ncoeff quantization + Huffman"]
+  Succinct["src/succinct\nLOUDS parent index"]
+  Core["src/core\nBLAS/LAPACK/kernel provider"]
+  CUDA["src/cuda\nCUDA stream pool"]
+  IVF["src/ivf\nprobe helpers"]
+  Common["src/common\nconfig/logger/timer"]
+
+  App --> Pipeline
+  API --> Pipeline
+
+  Pipeline --> Common
+  Pipeline --> IO
+  Pipeline --> Quantizer
+  Pipeline --> Linkage
+  Pipeline --> Eval
+
+  Quantizer --> Core
+  Quantizer --> IO
+  Quantizer --> CUDA
+  Quantizer --> Common
+
+  Linkage --> Core
+  Linkage --> IO
+  Linkage --> Coeff
+  Linkage --> Succinct
+  Linkage --> CUDA
+  Linkage --> Common
+
+  Eval --> IO
+  Eval --> Linkage
+  Eval --> Coeff
+  Eval --> Succinct
+  Eval --> IVF
+  Eval --> CUDA
+  Eval --> Common
+
+  IO --> Common
+  IO --> Core
+  Coeff --> Common
+  Coeff --> Core
+  Succinct --> Common
+  CUDA --> Core
+  IVF --> Common

@@ -1,0 +1,78 @@
+flowchart TB
+  %% Quantizer source organization.
+
+  Header["include/stlq/quantizer/*\npublic quantizer declarations"]
+
+  Encoder["src/quantizer/encoder.cpp\nmain encoder facade"]
+  EncoderInc["encoder_*.inc\ninternal encoder train/base/precomp helpers"]
+  TrainStreaming["encoder_train_streaming.cpp\nstreaming training driver"]
+
+  TrainStages["streaming_train_*_stages.cpp\ninit / iteration / round stages"]
+  TrainConfig["streaming_train_config.cpp\ntraining config normalization"]
+  TrainIO["streaming_train_io.cpp\nstreaming train IO helpers"]
+
+  BaseEncode["encode_base_streaming.cpp\nlarge base/basic encoding"]
+  UpdateCodebooks["update_codebooks_streaming.cpp\nstreaming codebook updates"]
+
+  Beam["beam_search.cpp\nbeam search encode core"]
+  BeamCuda["beam_search_cuda.cu\nbeam search CUDA path"]
+  ICM["icm.cpp\nICM CPU path"]
+  ICMCuda["icm_cuda.cu\nICM CUDA path"]
+  LS["least_squares.cpp\ncoefficient solve"]
+  LA["linear_algebra.cpp\nmatrix helpers"]
+  Cost["cost_utils.cpp\ncost/error helpers"]
+  Recon["reconstruct.cpp\nreconstruction helpers"]
+  Spkmeans["spkmeans.cpp\nspherical kmeans init"]
+  PrecompLargeRoot["precomp_large_root.cpp\nlarge-root precomp"]
+  RVQStore["rvq_layer_store.cpp\nRVQ/codebook layer store"]
+
+  IO["src/io/*\ndataset readers + train/base artifacts"]
+  Core["src/core/*\nBLAS/LAPACK/kernel provider"]
+  CUDA["src/cuda/*\nCUDA stream pool"]
+  Common["src/common/*\nconfig/logger/timer/types"]
+  Linkage["src/linkage/*\ninit linkage calls during train"]
+
+  Header --> Encoder
+  Encoder --> EncoderInc
+  Encoder --> TrainStreaming
+  Encoder --> BaseEncode
+
+  TrainStreaming --> TrainStages
+  TrainStages --> TrainConfig
+  TrainStages --> TrainIO
+  TrainStages --> Spkmeans
+  TrainStages --> BaseEncode
+  TrainStages --> UpdateCodebooks
+  TrainStages --> Linkage
+
+  BaseEncode --> Beam
+  BaseEncode --> ICM
+  BaseEncode --> LS
+  BaseEncode --> PrecompLargeRoot
+  BaseEncode --> RVQStore
+
+  UpdateCodebooks --> LS
+  UpdateCodebooks --> LA
+  UpdateCodebooks --> Core
+
+  Beam --> BeamCuda
+  ICM --> ICMCuda
+  Beam --> Cost
+  ICM --> Cost
+  LS --> LA
+  Recon --> LA
+  Spkmeans --> Core
+
+  TrainIO --> IO
+  BaseEncode --> IO
+  RVQStore --> IO
+
+  BeamCuda --> CUDA
+  ICMCuda --> CUDA
+  BaseEncode --> CUDA
+
+  Encoder --> Common
+  TrainStages --> Common
+  BaseEncode --> Common
+  LS --> Core
+  LA --> Core
