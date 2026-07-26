@@ -81,7 +81,10 @@ struct CudaStreamKernels::Impl {
     int rvq_upto_layer = 0;
     std::vector<std::size_t> rvq_cb_offsets_f;  // float offsets into rvq_codebooks
     std::vector<int> rvq_cb_K;                  // K per prior layer
-    DeviceBuffer rvq_meta;                      // int[4 * upto_layer]: cb_offsets_f, cb_K, code_offsets_bytes, code_bytes
+    // Per-slot metadata is required because code offsets depend on the current
+    // block capacity. The copy stream may stage the next block while the
+    // compute stream is still projecting the current one.
+    DeviceBuffer rvq_meta_slot[2];  // int[4 * upto_layer]: cb_offsets_f, cb_K, code_offsets_bytes, code_bytes
 
     // Codes for the current block (per upload slot). Stored as a packed byte buffer with fixed
     // capacity = rvq_codes_capacity_cols[slot]. Layer offsets are in bytes.
@@ -1130,6 +1133,8 @@ struct CudaStreamKernels::Impl {
 
         const float* src = B;
         if (stage_to_pinned) {
+            ThrowIf(cudaStreamSynchronize(stream),
+                    "cudaStreamSynchronize (kmeans staging reusable)");
             const auto t0 = std::chrono::high_resolution_clock::now();
             // Use write-combined pinned memory to maximize H2D bandwidth (we only write on host, then DMA to GPU).
             kmeans_hpin.EnsureWithFlags(n * sizeof(float),
@@ -1242,6 +1247,10 @@ struct CudaStreamKernels::Impl {
 
         const float* src = B;
         if (stage_to_pinned) {
+            // The CPU is about to overwrite this slot's pinned buffer. Its
+            // previous asynchronous upload must have finished first.
+            ThrowIf(cudaEventSynchronize(kmeans_ready_ev[slot]),
+                    "cudaEventSynchronize (kmeans host staging reusable)");
             const auto t0 = std::chrono::high_resolution_clock::now();
             kmeans_hpin_slot[slot].EnsureWithFlags(n * sizeof(float),
                                                    cudaHostAllocPortable | cudaHostAllocWriteCombined);
@@ -1339,6 +1348,11 @@ struct CudaStreamKernels::Impl {
         if (rowsB <= 0 || colsB <= 0) {
             return nullptr;
         }
+        EnsureKmeansReadyEvents();
+        // The caller writes this host buffer immediately. Wait for the prior
+        // asynchronous use of the same slot before exposing it again.
+        ThrowIf(cudaEventSynchronize(kmeans_ready_ev[slot]),
+                "cudaEventSynchronize (kmeans pinned stage reusable)");
         const std::size_t n = static_cast<std::size_t>(rowsB) * static_cast<std::size_t>(colsB);
         kmeans_hpin_slot[slot].EnsureWithFlags(n * sizeof(float),
                                               cudaHostAllocPortable | cudaHostAllocWriteCombined);
@@ -1352,6 +1366,9 @@ struct CudaStreamKernels::Impl {
         if (rowsB <= 0 || colsB <= 0) {
             return nullptr;
         }
+        EnsureKmeansReadyEvents();
+        ThrowIf(cudaEventSynchronize(kmeans_ready_ev[slot]),
+                "cudaEventSynchronize (kmeans u8 pinned stage reusable)");
         const std::size_t n = static_cast<std::size_t>(rowsB) * static_cast<std::size_t>(colsB);
         kmeans_hpin_u8_slot[slot].EnsureWithFlags(n * sizeof(std::uint8_t),
                                                  cudaHostAllocPortable | cudaHostAllocWriteCombined);
@@ -1419,6 +1436,8 @@ struct CudaStreamKernels::Impl {
                     "cudaMemcpyAsync (kmeans_xnorm_slot H2D pinned)");
         } else {
             // Pack on device via strided copies: fall back to host repack into the internal pinned buffer.
+            ThrowIf(cudaEventSynchronize(kmeans_ready_ev[slot]),
+                    "cudaEventSynchronize (kmeans pinned repack reusable)");
             float* dst = static_cast<float*>(kmeans_hpin_slot[slot].ptr);
             for (int c = 0; c < colsB; ++c) {
                 std::memcpy(dst + static_cast<std::size_t>(c) * static_cast<std::size_t>(rowsB),
@@ -1553,6 +1572,8 @@ struct CudaStreamKernels::Impl {
                     "cudaMemcpyAsync (kmeans_u8_slot H2D pinned)");
         } else {
             // Repack into internal pinned u8 buffer with ld == rowsB.
+            ThrowIf(cudaEventSynchronize(kmeans_ready_ev[slot]),
+                    "cudaEventSynchronize (kmeans u8 pinned repack reusable)");
             kmeans_hpin_u8_slot[slot].EnsureWithFlags(nbytes_u8,
                                                      cudaHostAllocPortable | cudaHostAllocWriteCombined);
             std::uint8_t* dst = static_cast<std::uint8_t*>(kmeans_hpin_u8_slot[slot].ptr);
@@ -2164,7 +2185,10 @@ struct CudaStreamKernels::Impl {
         }
     }
 
-    void EnsureRvqMetaOnDevice(int upto_layer, const int* code_bytes_per_code) {
+    void EnsureRvqMetaOnDevice(int slot, int upto_layer, const int* code_bytes_per_code) {
+        if (slot != 0 && slot != 1) {
+            throw std::runtime_error("EnsureRvqMetaOnDevice: slot must be 0 or 1.");
+        }
         if (upto_layer <= 0) return;
         if (!code_bytes_per_code) {
             throw std::runtime_error("EnsureRvqMetaOnDevice: code_bytes_per_code is null.");
@@ -2173,7 +2197,7 @@ struct CudaStreamKernels::Impl {
         if (meta_elems > 128) {
             throw std::runtime_error("EnsureRvqMetaOnDevice: upto_layer too large.");
         }
-        rvq_meta.Ensure(static_cast<std::size_t>(meta_elems) * sizeof(int));
+        rvq_meta_slot[slot].Ensure(static_cast<std::size_t>(meta_elems) * sizeof(int));
         std::array<int, 128> meta{};
         for (int l = 0; l < upto_layer; ++l) {
             meta[static_cast<std::size_t>(l)] = static_cast<int>(rvq_cb_offsets_f[static_cast<std::size_t>(l)]);
@@ -2182,7 +2206,7 @@ struct CudaStreamKernels::Impl {
                 static_cast<int>(rvq_code_offsets_bytes[static_cast<std::size_t>(l)]);
             meta[static_cast<std::size_t>(3 * upto_layer + l)] = code_bytes_per_code[l];
         }
-        ThrowIf(cudaMemcpyAsync(rvq_meta.ptr,
+        ThrowIf(cudaMemcpyAsync(rvq_meta_slot[slot].ptr,
                                 meta.data(),
                                 static_cast<std::size_t>(meta_elems) * sizeof(int),
                                 cudaMemcpyHostToDevice,
@@ -2209,7 +2233,7 @@ struct CudaStreamKernels::Impl {
         }
 
         EnsureRvqCodesLayout(upto_layer, /*capacity_cols=*/cols, code_bytes_per_code);
-        EnsureRvqMetaOnDevice(upto_layer, code_bytes_per_code);
+        EnsureRvqMetaOnDevice(slot, upto_layer, code_bytes_per_code);
 
         std::uint8_t* codes_dst = static_cast<std::uint8_t*>(rvq_codes_slot[slot].ptr);
         for (int l = 0; l < upto_layer; ++l) {
@@ -2263,7 +2287,7 @@ struct CudaStreamKernels::Impl {
             rvq_hatnorm2_slot[slot].Ensure(static_cast<std::size_t>(cols) * sizeof(float));
             hatnorm2_out = static_cast<float*>(rvq_hatnorm2_slot[slot].ptr);
         }
-        const int* cb_offsets = static_cast<const int*>(rvq_meta.ptr);
+        const int* cb_offsets = static_cast<const int*>(rvq_meta_slot[slot].ptr);
         const int* cb_K = cb_offsets + upto_layer;
         const int* d_code_offsets = cb_K + upto_layer;
         const int* d_code_bytes = d_code_offsets + upto_layer;
@@ -2327,7 +2351,7 @@ struct CudaStreamKernels::Impl {
             rvq_hatnorm2_slot[slot].Ensure(static_cast<std::size_t>(cols) * sizeof(float));
             hatnorm2_out = static_cast<float*>(rvq_hatnorm2_slot[slot].ptr);
         }
-        const int* cb_offsets = static_cast<const int*>(rvq_meta.ptr);
+        const int* cb_offsets = static_cast<const int*>(rvq_meta_slot[slot].ptr);
         const int* cb_K = cb_offsets + upto_layer;
         const int* code_offsets = cb_K + upto_layer;
         const int* code_bytes = code_offsets + upto_layer;
@@ -2563,7 +2587,8 @@ struct CudaStreamKernels::Impl {
         rvq_upto_layer = 0;
         rvq_cb_offsets_f.clear();
         rvq_cb_K.clear();
-        rvq_meta.Reset();
+        rvq_meta_slot[0].Reset();
+        rvq_meta_slot[1].Reset();
         for (int s = 0; s < 2; ++s) {
             rvq_codes_slot[s].Reset();
             rvq_codes_capacity_cols[s] = 0;
@@ -2684,11 +2709,6 @@ struct CudaStreamKernels::Impl {
             const float* src = static_cast<const float*>(kmeans_xnorm_partial.ptr) +
                                static_cast<std::size_t>(src_col0) * static_cast<std::size_t>(kmeans_xnorm_partial_ld);
             
-            // We still need to record the ready event to satisfy the ping-pong protocol
-            // (compute stream waiting for "upload" to finish, which here is just a no-op).
-            ThrowIf(cudaEventRecord(kmeans_ready_ev[slot], stream_copy),
-                    "cudaEventRecord kmeans_ready_ev (partial cache zero-copy)");
-
             // We still copy norm2 because it's small and kernels expect it in kmeans_norm2_slot.
             if (kmeans_collect_metrics) {
                 kmeans_norm2_slot[slot].Ensure(static_cast<std::size_t>(cols) * sizeof(float));
@@ -2698,6 +2718,10 @@ struct CudaStreamKernels::Impl {
                                         cudaMemcpyDeviceToDevice, stream_copy),
                         "cudaMemcpyAsync (kmeans partial norm2 -> slot)");
             }
+
+            // Publish the direct cache view only after every slot-side dependency is ready.
+            ThrowIf(cudaEventRecord(kmeans_ready_ev[slot], stream_copy),
+                    "cudaEventRecord kmeans_ready_ev (partial cache zero-copy)");
             
             DeviceMatF32View out;
             out.ptr = src;
