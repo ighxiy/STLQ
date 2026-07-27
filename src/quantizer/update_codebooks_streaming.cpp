@@ -1807,7 +1807,10 @@ namespace stlq
                 int idx_flat[32];
                 float alpha[32];
 
-#pragma omp for schedule(dynamic, 1)
+                // G/T are accumulated per thread and reduced in fixed shard order below.
+                // Keep the cluster-to-shard assignment fixed as well, otherwise floating-point
+                // grouping depends on OpenMP timing and identical seeds can diverge across rounds.
+#pragma omp for schedule(static)
                 for (int cid = 0; cid < ivf.nlist(); ++cid) {
                     const double w_cluster =
                     (!train.is_bad_cluster.empty() &&
@@ -2666,7 +2669,9 @@ namespace stlq
                 int idx_flat[32];
                 float alpha[32];
 
-#pragma omp for schedule(dynamic, 1)
+                // Match the deterministic reduction contract used by the regular C_one update.
+                // Dynamic scheduling changes which clusters contribute to each thread-local shard.
+#pragma omp for schedule(static)
                 for (int cid = 0; cid < ivf.nlist(); ++cid) {
                     const double w_cluster =
                     (!train.is_bad_cluster.empty() &&
