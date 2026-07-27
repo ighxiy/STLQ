@@ -167,7 +167,7 @@ inline void SolveCholUpperRawDispatch(const float* STLQ_RESTRICT R,
                                       float* STLQ_RESTRICT x,
                                       float* STLQ_RESTRICT y,
                                       int stride) {
-    // Beam uses small n (<= m <= 16). Dispatch to enable compile-time unrolling.
+    // Common sizes use fixed unrolled solvers; larger supported sizes use the generic fallback.
     switch (n) {
         case 1: SolveCholUpperRawFixed<1>(R, b, x, y, stride); return;
         case 2: SolveCholUpperRawFixed<2>(R, b, x, y, stride); return;

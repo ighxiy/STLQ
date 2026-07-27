@@ -21,6 +21,7 @@
 #include "stlq/coeff/bit_io.h"
 #include "stlq/coeff/huffman_canonical.h"
 #include "stlq/core/blas.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/core/threading.h"
 #include "stlq/eval/linkage_norm_provider.h"
 #include "stlq/eval/linkage_norm_provider_cuda.h"
@@ -977,7 +978,7 @@ bool ComputeNorm2Louds(bool use_coeff_codec,const LoudsNativeBundle& bundle,
     const int d = bundle.meta_one.d;
     const int m = cl->m;
     const int m_codes = cl->m_codes;
-    if (d <= 0 || m <= 1 || m_codes != m - 1) {
+    if (d <= 0 || m <= 1 || m > kMaxSupportedModelM || m_codes != m - 1) {
         if (err) *err = "LOUDS-native eval: invalid dims for norm2.";
         return false;
     }
@@ -1037,8 +1038,8 @@ bool ComputeNorm2Louds(bool use_coeff_codec,const LoudsNativeBundle& bundle,
 
     const auto compute_root_norm2 = [&](const std::uint8_t* codes_src, std::size_t pos_src,
                                         float a0, auto a_layer_fn) -> float {
-        int idx[16];
-        float a[16];
+        int idx[kMaxSupportedModelM];
+        float a[kMaxSupportedModelM];
         for (int l = 1; l < m; ++l) {
             const int code = ReadSmallCode(codes_src, static_cast<int>(pos_src), m_codes, l - 1);
             idx[l - 1] = offsets_root_small[static_cast<std::size_t>(l)] + code;
@@ -1101,10 +1102,10 @@ bool ComputeNorm2Louds(bool use_coeff_codec,const LoudsNativeBundle& bundle,
         }
     }
 
-    int idx_i[16];
-    float b_i[16];
-    int idx_u[16];
-    float b_u[16];
+    int idx_i[kMaxSupportedModelM];
+    float b_i[kMaxSupportedModelM];
+    int idx_u[kMaxSupportedModelM];
+    float b_u[kMaxSupportedModelM];
     for (int pos = n_root_real; pos < n_real; ++pos) {
         const auto ppos = static_cast<std::size_t>(pos);
         const int local_ppos = real_base + pos;

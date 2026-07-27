@@ -13,6 +13,7 @@
 
 #include "stlq/common/logger.h"
 #include "stlq/common/timer.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/quantizer/cost_utils.h"
 #include "stlq/quantizer/icm.h"
 #include "stlq/quantizer/precomp_large_root.h"

@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "stlq/core/blas.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/core/threading.h"
 
 namespace stlq::eval {
@@ -70,7 +71,7 @@ bool LinkageNormProviderLookup::ComputeNorm2(const ClusterView& cv,
     const int d = meta_one_.d;
     const int m = cv.m;
     const int m_codes = cv.m_codes;
-    if (d <= 0 || m <= 1 || m_codes != m - 1) {
+    if (d <= 0 || m <= 1 || m > kMaxSupportedModelM || m_codes != m - 1) {
         if (err) *err = "LinkageNormProviderLookup: invalid dims.";
         return false;
     }
@@ -118,8 +119,8 @@ bool LinkageNormProviderLookup::ComputeNorm2(const ClusterView& cv,
     const auto run_with_parent = [&](const auto* parent_1based) -> bool {
         const auto compute_root_norm2 = [&](const std::uint8_t* codes_src, std::size_t pos_src,
                                             float a0, auto a_layer_fn) -> float {
-            int idx[16];
-            float a[16];
+            int idx[kMaxSupportedModelM];
+            float a[kMaxSupportedModelM];
             const int mm = m;
             for (int l = 1; l < mm; ++l) {
                 const int code = ReadSmallCode(codes_src, pos_src, m_codes, l - 1);
@@ -193,10 +194,10 @@ bool LinkageNormProviderLookup::ComputeNorm2(const ClusterView& cv,
             }
         }
 
-        int idx_i[16];
-        float b_i[16];
-        int idx_u[16];
-        float b_u[16];
+        int idx_i[kMaxSupportedModelM];
+        float b_i[kMaxSupportedModelM];
+        int idx_u[kMaxSupportedModelM];
+        float b_u[kMaxSupportedModelM];
         for (int pos = n_root_real; pos < n_real; ++pos) {
             const int local_ppos = real_base + pos;
             const auto ppos = static_cast<std::size_t>(pos);

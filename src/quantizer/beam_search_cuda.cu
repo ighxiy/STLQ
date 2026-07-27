@@ -12,6 +12,7 @@
 #include <cublas_v2.h>
 
 #include "stlq/common/logger.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/quantizer/linear_algebra.h"
 #include "stlq/quantizer/precomp_large_root.h"
 #include "stlq/common/timer.h"

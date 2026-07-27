@@ -23,6 +23,7 @@
 #include "stlq/core/kernel_provider.h"
 #include "stlq/core/kernel_provider_cpu.h"
 #include "stlq/core/lapack.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/core/threading.h"
 #include "stlq/io/base_list_store.h"
 #include "stlq/io/base_store.h"
@@ -41,6 +42,9 @@ namespace stlq
     namespace
     {
         constexpr float kEps = 1e-6f;
+        constexpr int kMaxSmallLayers = kMaxSupportedModelM - 1;
+        constexpr int kMaxSmallCodewordsPerLayer = 256;
+        constexpr int kMaxSmallNnz = kMaxSmallLayers * kMaxSmallCodewordsPerLayer;
         std::atomic<std::uint64_t> g_codebook_build_tag{0};
 
         bool ReaderCanReadU8(const io::DatasetVectorReader* reader) {
@@ -319,7 +323,8 @@ namespace stlq
         }
         const int d = basic.meta().d;
         const int m = cfg.model.m;
-        if (d <= 0 || m <= 1 || static_cast<int>(cfg.model.h_vec.size()) != m) {
+        if (d <= 0 || m <= 1 || m > kMaxSupportedModelM ||
+            static_cast<int>(cfg.model.h_vec.size()) != m) {
             if (err) *err = "UpdateCRootFromTrainBasicStreaming: invalid d/m/h_vec.";
             return false;
         }
@@ -644,7 +649,8 @@ namespace stlq
         const int d = basic.meta().d;
         const int m = cfg.model.m;
         const int s = std::max(0, m - 1);
-        if (d <= 0 || m <= 1 || static_cast<int>(cfg.model.h_vec.size()) != m) {
+        if (d <= 0 || m <= 1 || m > kMaxSupportedModelM ||
+            static_cast<int>(cfg.model.h_vec.size()) != m) {
             if (err) *err = "UpdateCRootFromTrainBasicStreamingExactLS: invalid d/m/h_vec.";
             return false;
         }
@@ -665,7 +671,7 @@ namespace stlq
 
         // This optimized implementation assumes all small layers have <=256 codewords so we can use a compact 256-bit mask
         // per (cluster, layer) to enumerate nonzeros. This matches the intended large-scale configuration:
-        //   h0 up to 65536, h_l=256 for l>=1, d=128, m<=16.
+        //   h0 up to 65536, h_l=256 for l>=1, d=128, m<=kMaxSupportedModelM.
         for (int l = 1; l < m; ++l) {
             if (cfg.model.h_vec[static_cast<std::size_t>(l)] > 256) {
                 if (err)
@@ -1237,12 +1243,11 @@ namespace stlq
                 double* dG = dG_all.data() + static_cast<std::size_t>(tid) * packed;
                 double* dT_t = dT_all_t.data() + static_cast<std::size_t>(tid) * td_size;
 
-                // Per-thread scratch (m<=16, each small layer <=256).
-                int nnz_layer[16];
-                int p_layer[16][256];
-                float g_layer[16][256];
-                int p_all[4096];
-                float g_allv[4096];
+                int nnz_layer[kMaxSmallLayers];
+                int p_layer[kMaxSmallLayers][kMaxSmallCodewordsPerLayer];
+                float g_layer[kMaxSmallLayers][kMaxSmallCodewordsPerLayer];
+                int p_all[kMaxSmallNnz];
+                float g_allv[kMaxSmallNnz];
 
 #pragma omp for schedule(static)
                 for (int cid = 0; cid < h0; ++cid) {
@@ -1448,8 +1453,8 @@ namespace stlq
         const double t_recover_root = profile ? omp_get_wtime() : 0.0;
 #pragma omp parallel default(none) shared(book0, den0_f, C_root_inout, gt, g_mask, g_hist, t0_f, Vt) firstprivate(h0, Hs, d, s, kMaskWords, lambda_used)
         {
-            int p_all[4096];
-            float g_allv[4096];
+            int p_all[kMaxSmallNnz];
+            float g_allv[kMaxSmallNnz];
 
 #pragma omp for schedule(static)
             for (int cid = 0; cid < h0; ++cid) {

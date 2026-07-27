@@ -12,7 +12,8 @@ void BeamSearchPrefixLSLargeRootCuda(const ColMajorMatrix<float>& X,
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || xC_small.rows != Hs || xC_small.cols != n) {
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM ||
+        h0 <= 0 || xC_small.rows != Hs || xC_small.cols != n) {
         return;
     }
     if (H_beam <= 0) return;
@@ -228,7 +229,7 @@ void BeamSearchPrefixLSLargeRootCudaH2(const ColMajorMatrix<float>& X,
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || Hs <= 0) {
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM || h0 <= 0 || Hs <= 0) {
         return;
     }
 
@@ -508,7 +509,7 @@ static void BeamSearchPrefixLSLargeRootCudaH2DeviceXcCore(const ColMajorMatrix<f
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || Hs <= 0) {
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM || h0 <= 0 || Hs <= 0) {
         return;
     }
     if (!xC_small_dev.ptr || xC_small_dev.rows != Hs || xC_small_dev.cols != n || xC_small_dev.ld != Hs) {
@@ -819,7 +820,7 @@ static void BeamSearchPrefixLSLargeRootCudaH2DeviceXcDeviceXCore(const DeviceMat
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || Hs <= 0) return;
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM || h0 <= 0 || Hs <= 0) return;
     if (!X_dev.ptr || X_dev.ld < d) {
         throw std::runtime_error("BeamSearchPrefixLSLargeRootCudaH2DeviceXcDeviceXCore: invalid X_dev view.");
     }
@@ -1119,7 +1120,7 @@ void BeamSearchPrefixLSLargeRootCudaH4(const ColMajorMatrix<float>& X,
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || Hs <= 0) {
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM || h0 <= 0 || Hs <= 0) {
         return;
     }
     cluster_id->resize(static_cast<std::size_t>(n));
@@ -1401,7 +1402,7 @@ static void BeamSearchPrefixLSLargeRootCudaH4DeviceXcCore(const ColMajorMatrix<f
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || Hs <= 0) {
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM || h0 <= 0 || Hs <= 0) {
         return;
     }
     if (!xC_small_dev.ptr || xC_small_dev.rows != Hs || xC_small_dev.cols != n || xC_small_dev.ld != Hs) {
@@ -1725,7 +1726,7 @@ static void BeamSearchPrefixLSLargeRootCudaH4DeviceXcDeviceXCore(const DeviceMat
     const int m = pre.m;
     const int h0 = pre.h_vec.empty() ? 0 : pre.h_vec[0];
     const int Hs = pre.H_small;
-    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || h0 <= 0 || Hs <= 0) return;
+    if (!pre.ready || n <= 0 || d <= 0 || m <= 0 || m > kMaxM || h0 <= 0 || Hs <= 0) return;
     if (!X_dev.ptr || X_dev.ld < d) {
         throw std::runtime_error("BeamSearchPrefixLSLargeRootCudaH4DeviceXcDeviceXCore: invalid X_dev view.");
     }

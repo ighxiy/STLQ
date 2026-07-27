@@ -5,7 +5,7 @@
 namespace {
 
 constexpr float kEps = 1e-6f;
-constexpr int kMaxM = 16;  // supported m upper bound (see README).
+constexpr int kMaxM = kMaxSupportedModelM;
 
 inline void CudaCheck(cudaError_t st, const char* msg) {
     if (st == cudaSuccess) {

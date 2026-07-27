@@ -21,6 +21,7 @@
 #include <cublas_v2.h>
 
 #include "stlq/core/blas.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/core/threading.h"
 #include "stlq/common/logger.h"
 
@@ -49,10 +50,10 @@ int  GetCudaLinkageEncodeHybridVarRootIlsRounds()             { return g_hybrid_
 namespace {
 
 constexpr float kEps = 1e-6f;
-constexpr int kMaxM = 16;  // supported m upper bound (see README).
+constexpr int kMaxM = kMaxSupportedModelM;
 
 template <typename Fn>
-inline void DispatchM2To16(int m, const char* what, Fn&& fn) {
+inline void DispatchM2To20(int m, const char* what, Fn&& fn) {
     switch (m) {
         case 2: fn(std::integral_constant<int, 2>{}); return;
         case 3: fn(std::integral_constant<int, 3>{}); return;
@@ -69,6 +70,10 @@ inline void DispatchM2To16(int m, const char* what, Fn&& fn) {
         case 14: fn(std::integral_constant<int, 14>{}); return;
         case 15: fn(std::integral_constant<int, 15>{}); return;
         case 16: fn(std::integral_constant<int, 16>{}); return;
+        case 17: fn(std::integral_constant<int, 17>{}); return;
+        case 18: fn(std::integral_constant<int, 18>{}); return;
+        case 19: fn(std::integral_constant<int, 19>{}); return;
+        case 20: fn(std::integral_constant<int, 20>{}); return;
         default:
             throw std::runtime_error(std::string(what) + ": unsupported m=" + std::to_string(m));
     }
@@ -3632,7 +3637,7 @@ inline void LaunchGreedyInitAbsSmallFixedRoot(cudaStream_t stream,
                                              int n) {
     const int threads = 256;
     const int blocks = n;
-    DispatchM2To16(m, "LaunchGreedyInitAbsSmallFixedRoot", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchGreedyInitAbsSmallFixedRoot", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         GreedyInitAbsSmallFixedRootFixed<M><<<blocks, threads, 0, stream>>>(
             Hs, small_offsets, h_vec, invnorm_small, G_small, rC_small, B_small, n);
@@ -3657,7 +3662,7 @@ inline void LaunchSolveCostInitLargeRootFixedRoot(cudaStream_t stream,
                                                   int n,
                                                   int blocks,
                                                   int threads) {
-    DispatchM2To16(m, "LaunchSolveCostInitLargeRootFixedRoot", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchSolveCostInitLargeRootFixedRoot", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         SolveCostInitLargeRootFixedRootFixed<M><<<blocks, threads, 0, stream>>>(
             Hs, small_offsets, norm0_root, xC_small, G_small, g0s_root, xC0, X_norm2,
@@ -3683,7 +3688,7 @@ inline void LaunchSolveCostInitLargeRootFixedRootPerSample(cudaStream_t stream,
                                                           int n,
                                                           int blocks,
                                                           int threads) {
-    DispatchM2To16(m, "LaunchSolveCostInitLargeRootFixedRootPerSample", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchSolveCostInitLargeRootFixedRootPerSample", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         SolveCostInitLargeRootFixedRootPerSampleFixed<M><<<blocks, threads, 0, stream>>>(
             Hs, small_offsets, norm0, xC_small, G_small, g0s, xC0, X_norm2,
@@ -3712,7 +3717,7 @@ inline void LaunchIcmLayerLargeRootFixedRootBlockAbs(cudaStream_t stream,
                                                     int n) {
     dim3 grid(n);
     dim3 block(256);
-    DispatchM2To16(m, "LaunchIcmLayerLargeRootFixedRootBlockAbs", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchIcmLayerLargeRootFixedRootBlockAbs", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         IcmLayerLargeRootFixedRootBlockFixed<true, M><<<grid, block, 0, stream>>>(
             Hs, small_offsets, h_vec, invnorm_small, norm0_root, xC_small, G_small,
@@ -3741,7 +3746,7 @@ inline void LaunchIcmLayerLargeRootFixedRootPerSampleBlockAbs(cudaStream_t strea
                                                              int n) {
     dim3 grid(n);
     dim3 block(256);
-    DispatchM2To16(m, "LaunchIcmLayerLargeRootFixedRootPerSampleBlockAbs", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchIcmLayerLargeRootFixedRootPerSampleBlockAbs", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         IcmLayerLargeRootFixedRootPerSampleBlockFixed<true, M><<<grid, block, 0, stream>>>(
             Hs, small_offsets, h_vec, invnorm_small, norm0, xC_small, G_small,
@@ -3762,7 +3767,7 @@ inline void LaunchLinkageCopyAndPerturbSmallCodesSkipLayer0WithSampleIds(
     int n,
     int blocks,
     int threads) {
-    DispatchM2To16(m, "LaunchLinkageCopyAndPerturbSmallCodesSkipLayer0WithSampleIds", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchLinkageCopyAndPerturbSmallCodesSkipLayer0WithSampleIds", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         LinkageCopyAndPerturbSmallCodesSkipLayer0WithSampleIdsFixed<M><<<blocks, threads, 0, stream>>>(
             h_vec, seed, outer_iter_1based, sample_ids, ksel, B_src_small, B_dst_small, n);
@@ -3781,7 +3786,7 @@ inline void LaunchFindBestRootCandFromXc0FullAndSmall(cudaStream_t stream,
                                                      RootCode* out_code,
                                                      int n,
                                                      int threads) {
-    DispatchM2To16(m, "LaunchFindBestRootCandFromXc0FullAndSmall", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchFindBestRootCandFromXc0FullAndSmall", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         FindBestRootCandFromXc0FullAndSmallFixed<M><<<n, threads, 0, stream>>>(
             h0, xC0_full, inv_root, G0s_T, small_offsets, B_small, a, out_code, n);
@@ -3800,7 +3805,7 @@ inline void LaunchBuildRe0FromSmallCodesLargeRoot(cudaStream_t stream,
                                                  int n,
                                                  int blocks,
                                                  int threads) {
-    DispatchM2To16(m, "LaunchBuildRe0FromSmallCodesLargeRoot", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchBuildRe0FromSmallCodesLargeRoot", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         BuildRe0FromSmallCodesLargeRootFixed<M><<<blocks, threads, 0, stream>>>(
             d, small_offsets, C_small, B_small, a, residuals, re0, n);
@@ -3830,7 +3835,7 @@ inline void LaunchTryAcceptRootIcmLargeRootPerSample(cudaStream_t stream,
                                                     int n,
                                                     int blocks,
                                                     int threads) {
-    DispatchM2To16(m, "LaunchTryAcceptRootIcmLargeRootPerSample", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchTryAcceptRootIcmLargeRootPerSample", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         TryAcceptRootIcmLargeRootPerSampleFixed<M><<<blocks, threads, 0, stream>>>(
             d, Hs, small_offsets, C0, C_small, xC_small, G_small, residuals, X_norm2,
@@ -3853,7 +3858,7 @@ inline void LaunchLinkageCopyAndPerturbLargeRootCodesWithSampleIds(
     int n,
     int blocks,
     int threads) {
-    DispatchM2To16(m, "LaunchLinkageCopyAndPerturbLargeRootCodesWithSampleIds", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchLinkageCopyAndPerturbLargeRootCodesWithSampleIds", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         LinkageCopyAndPerturbLargeRootCodesWithSampleIdsFixed<M><<<blocks, threads, 0, stream>>>(
             h_vec, seed, outer_iter_1based, sample_ids, ksel,
@@ -3876,7 +3881,7 @@ inline void LaunchLinkageCopyAndPerturbLargeRootCodesSkipRootWithSampleIds(
     int n,
     int blocks,
     int threads) {
-    DispatchM2To16(m, "LaunchLinkageCopyAndPerturbLargeRootCodesSkipRootWithSampleIds", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchLinkageCopyAndPerturbLargeRootCodesSkipRootWithSampleIds", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         LinkageCopyAndPerturbLargeRootCodesSkipRootWithSampleIdsFixed<M><<<blocks, threads, 0, stream>>>(
             h_vec, seed, outer_iter_1based, sample_ids, ksel,
@@ -3895,7 +3900,7 @@ inline void LaunchLinkageAcceptIfBetterLargeRootFixedRoot(cudaStream_t stream,
                                                          int n,
                                                          int blocks,
                                                          int threads) {
-    DispatchM2To16(m, "LaunchLinkageAcceptIfBetterLargeRootFixedRoot", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchLinkageAcceptIfBetterLargeRootFixedRoot", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         LinkageAcceptIfBetterLargeRootFixedRootFixed<M><<<blocks, threads, 0, stream>>>(
             B_cand_small, a_cand, cost_cand, B_small, a, cost, n);
@@ -3919,7 +3924,7 @@ inline void LaunchLinkageAcceptIfBetterLargeRootVarRoot(cudaStream_t stream,
                                                        int n,
                                                        int blocks,
                                                        int threads) {
-    DispatchM2To16(m, "LaunchLinkageAcceptIfBetterLargeRootVarRoot", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchLinkageAcceptIfBetterLargeRootVarRoot", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         LinkageAcceptIfBetterLargeRootVarRootFixed<M><<<blocks, threads, 0, stream>>>(
             B0_cand, xC0_cand, norm0_cand, B_small_cand, a_cand, cost_cand,
@@ -3936,7 +3941,7 @@ inline void LaunchWriteCodesFromFixedRootAndSmall(cudaStream_t stream,
                                                   int n,
                                                   int blocks,
                                                   int threads) {
-    DispatchM2To16(m, "LaunchWriteCodesFromFixedRootAndSmall", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchWriteCodesFromFixedRootAndSmall", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         WriteCodesFromFixedRootAndSmallFixed<OutCodeT, M><<<blocks, threads, 0, stream>>>(
             forced_root_code, B_small, B_full, n);
@@ -3952,7 +3957,7 @@ inline void LaunchWriteCodesFromPerSampleRootAndSmall(cudaStream_t stream,
                                                       int n,
                                                       int blocks,
                                                       int threads) {
-    DispatchM2To16(m, "LaunchWriteCodesFromPerSampleRootAndSmall", [&](auto m_tag) {
+    DispatchM2To20(m, "LaunchWriteCodesFromPerSampleRootAndSmall", [&](auto m_tag) {
         constexpr int M = decltype(m_tag)::value;
         WriteCodesFromPerSampleRootAndSmallFixed<OutCodeT, M><<<blocks, threads, 0, stream>>>(
             root_codes, B_small, B_full, n);

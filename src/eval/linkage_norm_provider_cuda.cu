@@ -14,6 +14,7 @@
 #include <cub/cub.cuh>
 
 #include "stlq/common/timer.h"
+#include "stlq/core/model_limits.h"
 #include "stlq/eval/linkage_norm_provider.h"
 
 namespace stlq::eval::cuda {
@@ -197,8 +198,8 @@ __global__ void NormVirtRootsKernel(int m,
         virt_a0, virt_coeffs_small,
         local, nc, m_codes, /*is_virtual=*/true, v, 0);
 
-    int idx_rs[16];
-    float a_rs[16];
+    int idx_rs[kMaxSupportedModelM];
+    float a_rs[kMaxSupportedModelM];
     const auto vpos = static_cast<std::size_t>(v);
     for (int l = 1; l < m; ++l) {
         const int code = ReadSmallCode(virt_codes_small_bytes, vpos, m_codes, l - 1);
@@ -255,8 +256,8 @@ __global__ void NormRealRootsKernel(int m,
         nullptr, nullptr,
         local, nc, m_codes, /*is_virtual=*/false, pos, 0);
 
-    int idx_rs[16];
-    float a_rs[16];
+    int idx_rs[kMaxSupportedModelM];
+    float a_rs[kMaxSupportedModelM];
     for (int l = 1; l < m; ++l) {
         const int code = ReadSmallCode(codes_small_bytes, p, m_codes, l - 1);
         idx_rs[l - 1] = offsets_root_small[l] + code;
@@ -325,8 +326,8 @@ __global__ void NormLinkageDepthKernel(int m,
     const int local = n_virt + pos;
     const int p = ReadParent1BasedRaw(parent_1based_raw, ppos, parent_elem_bytes) - 1;
 
-    int idx_i[16];
-    float b_i[16];
+    int idx_i[kMaxSupportedModelM];
+    float b_i[kMaxSupportedModelM];
 
     idx_i[0] = offsets_one[0] + ReadCode0One(code0_one_bytes, ppos);
     b_i[0] = ReadLinkageCoeff<UseQuantized>(
@@ -423,8 +424,8 @@ __global__ void NormLinkageDepthKernel(int m,
         }
 
         // linkage ancestor residual dot
-        int idx_u[16];
-        float b_u[16];
+        int idx_u[kMaxSupportedModelM];
+        float b_u[kMaxSupportedModelM];
         const auto up = static_cast<std::size_t>(a_real);
 
         idx_u[0] = offsets_one[0] + ReadCode0One(code0_one_bytes, up);
@@ -676,7 +677,7 @@ struct LinkageNormProviderLookupCuda::Impl {
                 return false;
             }
         }
-        if (m <= 1 || m > 16 || m_codes != m - 1) {
+        if (m <= 1 || m > kMaxSupportedModelM || m_codes != m - 1) {
             last_stats_.fallback_reason = 3;
             if (err) *err = "LinkageNormProviderLookupCuda: unsupported m.";
             return false;

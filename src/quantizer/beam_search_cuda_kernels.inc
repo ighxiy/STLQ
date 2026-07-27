@@ -1,6 +1,6 @@
 namespace {
 
-constexpr int kMaxM = 16;
+constexpr int kMaxM = kMaxSupportedModelM;
 
 inline void ThrowIf(cudaError_t st, const char* what) {
     if (st != cudaSuccess) {
@@ -660,7 +660,7 @@ __device__ inline void SolveCholUpperDispatch(const float* __restrict__ R,
         case 16: SolveCholUpperFixed<16>(R, b, x, y, stride); return;
         default: break;
     }
-    // Shouldn't happen (m<=16 in our configs). Fall back to a conservative loop.
+    // Layers above the fixed specializations use the generic solver.
     // Forward solve U^T y = b
     for (int i = 0; i < n; ++i) {
         float s = b[i];
