@@ -2853,7 +2853,7 @@ bool EvalImpl(const Config& cfg, bool use_coeff_codec,
         }
 
         const double scan_t0 = omp_get_wtime();
-        #pragma omp parallel default(none) shared(topk, q_cids_len, q_cids_flat, cid_to_active, active_views, qt, offsets_root_small, meta_one, use_coeff_codec, use_norm2_lut, bundle) firstprivate(qlen, nprobe_cap, root_small_total_cols, one_total_cols)
+        #pragma omp parallel default(none) shared(topk, out, q_cids_len, q_cids_flat, cid_to_active, active_views, qt, offsets_root_small, meta_one, use_coeff_codec, use_norm2_lut, bundle) firstprivate(q0, qlen, nprobe_cap, root_small_total_cols, one_total_cols)
         {
             ScanScratch scratch;
             #pragma omp for schedule(static)
@@ -2906,10 +2906,13 @@ bool EvalImpl(const Config& cfg, bool use_coeff_codec,
                         }
                     }
                 }
+                // The OpenMP iteration owns this query heap from scan through
+                // final sorting.  Keep the fixed query-owner contract in the
+                // native-LOUDS path as well as the materialized-parent path.
+                heap.Finalize(
+                    out->dists.Col(q0 + qi),
+                    out->indices.Col(q0 + qi));
             }
-        }
-        for (int qi = 0; qi < qlen; ++qi) {
-            topk[static_cast<std::size_t>(qi)].Finalize(out->dists.Col(q0 + qi), out->indices.Col(q0 + qi));
         }
         total_core_scan_topk_wall += omp_get_wtime() - scan_t0;
     }

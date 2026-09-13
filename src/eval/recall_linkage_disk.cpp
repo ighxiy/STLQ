@@ -2093,7 +2093,7 @@ namespace stlq
             const bool want_profile = (sums && sums->enabled);
 
             const double scan_kernel_t0 = want_profile ? omp_get_wtime() : 0.0;
-#pragma omp parallel default(none) shared(topk, q_cids_len, q_cids_flat, cid_to_active, active_views, qt, offsets_root_small, meta_one, scan_coeff_fn, sums) firstprivate(qlen, nprobe_cap, root_small_total_cols, one_total_cols, want_profile)
+#pragma omp parallel default(none) shared(topk, out, q_cids_len, q_cids_flat, cid_to_active, active_views, qt, offsets_root_small, meta_one, scan_coeff_fn, sums) firstprivate(q0, qlen, nprobe_cap, root_small_total_cols, one_total_cols, want_profile)
             {
                 ScanScratch scratch;
                 ScanKernelTiming timing_local{};
@@ -2117,6 +2117,14 @@ namespace stlq
                                       &scratch,
                                       timing_ptr);
                     }
+                    // Each query heap is private to this OpenMP iteration.
+                    // Keep ownership through final sorting instead of
+                    // serializing all query finalizers after the parallel
+                    // scan.  This is the fixed production behavior; it does
+                    // not change candidate, distance, tie, or output order.
+                    heap.Finalize(
+                        out->dists.Col(q0 + qi),
+                        out->indices.Col(q0 + qi));
                 }
 
                 if (want_profile && sums) {
@@ -2154,13 +2162,6 @@ namespace stlq
                 *sums->total_scan_kernel += omp_get_wtime() - scan_kernel_t0;
             }
 
-            const double finalize_t0 = want_profile ? omp_get_wtime() : 0.0;
-            for (int qi = 0; qi < qlen; ++qi) {
-                (*topk)[static_cast<std::size_t>(qi)].Finalize(out->dists.Col(q0 + qi), out->indices.Col(q0 + qi));
-            }
-            if (want_profile && sums && sums->total_topk_finalize) {
-                *sums->total_topk_finalize += omp_get_wtime() - finalize_t0;
-            }
         }
 
         // CPU fallback for GPU scan: compute local TopK for a subset of (query,cluster) tasks.
