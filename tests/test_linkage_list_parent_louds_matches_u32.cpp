@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -192,11 +193,21 @@ void VerifyStoreParentLOUDS(const std::string& dir) {
     }
 }
 
+void RewriteMetaAsLegacyChainStore(const std::string& dir) {
+    const auto meta_path = std::filesystem::path(dir) / "meta.bin";
+    std::fstream meta(meta_path, std::ios::binary | std::ios::in | std::ios::out);
+    assert(meta.is_open());
+    meta.write("CHAINLST", 8);
+    assert(meta.good());
+}
+
 }  // namespace
 
 int main() {
     const std::string dir = TempDirPath();
     WriteTinyStore(dir);
+    VerifyStoreParentLOUDS(dir);
+    RewriteMetaAsLegacyChainStore(dir);
     VerifyStoreParentLOUDS(dir);
     RemoveAllQuiet(dir);
     return 0;

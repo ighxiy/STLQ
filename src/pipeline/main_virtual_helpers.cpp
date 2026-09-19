@@ -584,15 +584,29 @@ LinkageLOUDSIndexBitBudget LogLinkageBitBudgetSummary(const stlq::Config& config
 
     // Summary #2: information bits budget with all structural overheads (includes louds_raw, virtual nodes, and IVF routing bits for all nodes).
     const double ivf_bits_theory = (nlist > 1) ? std::log2(static_cast<double>(nlist)) : 0.0;
+    // The all_roots policy is the controlled w/o-linkage representation. It
+    // reuses LinkageListReader only so the ordinary coefficient codec and
+    // evaluator can be exercised; a deployed basic-only representation has no
+    // parent relation and therefore does not need the harness's all-root LOUDS.
+    const bool count_parent_topology =
+        config.base.linkage.reference_policy != "all_roots";
+    const double parent_topology_bits_per_real =
+        count_parent_topology ? louds_raw_bits_per_real : 0.0;
     const double info_bits_per_vec =
         ivf_bits_theory + (1.0 - linkage_ratio + virt_ratio) * (8.0 * static_cast<double>(m - 1)) +
         linkage_ratio * (8.0 * static_cast<double>(m)) +
         (coeff_all_bits_per_coeff_nreal * static_cast<double>(m)) +
-        louds_raw_bits_per_real;
+        parent_topology_bits_per_real;
 
-    stlq::LogInfo(
-        "Summary of information bits budget(ivf+root_code_virt+root_code_real+linkage_code_real+coeff_all_nreal+louds_raw): log2(nlist) + [(1-linkage_ratio+virt_ratio) * 8 * (m-1)] + (linkage_ratio * 8 * m) + (coeff_all_nreal * m) + louds_raw= " +
-        stlq::FormatFloat(static_cast<float>(info_bits_per_vec), 6) + " bit/per vector");
+    if (count_parent_topology) {
+        stlq::LogInfo(
+            "Summary of information bits budget(ivf+root_code_virt+root_code_real+linkage_code_real+coeff_all_nreal+louds_raw): log2(nlist) + [(1-linkage_ratio+virt_ratio) * 8 * (m-1)] + (linkage_ratio * 8 * m) + (coeff_all_nreal * m) + louds_raw= " +
+            stlq::FormatFloat(static_cast<float>(info_bits_per_vec), 6) + " bit/per vector");
+    } else {
+        stlq::LogInfo(
+            "Summary of information bits budget(w/o linkage: ivf+root_code_real+coeff_all_nreal; all-root LOUDS is an evaluation-harness artifact and is not counted): log2(nlist) + [8 * (m-1)] + (coeff_all_nreal * m)= " +
+            stlq::FormatFloat(static_cast<float>(info_bits_per_vec), 6) + " bit/per vector");
+    }
 
     return louds_index;
 }

@@ -610,7 +610,8 @@ bool BuildProviderClusterView(bool use_coeff_codec,
     parent_1based->assign(static_cast<std::size_t>(cl.n_real), 0u);
     if (cl.n_real > cl.n_root_real) {
         auto parent_decoder = cl.louds.MakeSequentialParentDecoder();
-        parent_decoder.Skip(static_cast<std::size_t>(cl.n_virt + cl.n_root_real));
+        parent_decoder.InitializeAfterValidatedRootPrefix(
+            static_cast<std::size_t>(cl.n_virt + cl.n_root_real));
         for (int pos = cl.n_root_real; pos < cl.n_real; ++pos) {
             (*parent_1based)[static_cast<std::size_t>(pos)] =
                 static_cast<std::uint32_t>(parent_decoder.NextParent1Based());
@@ -2086,7 +2087,8 @@ void ScanOneQueryFloat(const LoudsNativeCluster& cl,
 
     const float* one0 = oneptr[0];
     auto parent_decoder = cl.louds.MakeSequentialParentDecoder();
-    parent_decoder.Skip(static_cast<std::size_t>(real_base + cl.n_root_real));
+    parent_decoder.InitializeAfterValidatedRootPrefix(
+        static_cast<std::size_t>(real_base + cl.n_root_real));
     for (int pos = cl.n_root_real; pos < n_real; ++pos) {
         const int local = real_base + pos;
         const int p = static_cast<int>(parent_decoder.NextParent1Based()) - 1;
@@ -2180,7 +2182,8 @@ void ScanOneQueryFloatLut(const LoudsNativeCluster& cl,
 
     const float* one0 = oneptr[0];
     auto parent_decoder = cl.louds.MakeSequentialParentDecoder();
-    parent_decoder.Skip(static_cast<std::size_t>(real_base + cl.n_root_real));
+    parent_decoder.InitializeAfterValidatedRootPrefix(
+        static_cast<std::size_t>(real_base + cl.n_root_real));
     for (int pos = cl.n_root_real; pos < n_real; ++pos) {
         const int local = real_base + pos;
         const int p = static_cast<int>(parent_decoder.NextParent1Based()) - 1;
@@ -2286,7 +2289,8 @@ void ScanOneQueryInt8(const LoudsNativeCluster& cl,
 
     const float* one0 = oneptr[0];
     auto parent_decoder = cl.louds.MakeSequentialParentDecoder();
-    parent_decoder.Skip(static_cast<std::size_t>(real_base + cl.n_root_real));
+    parent_decoder.InitializeAfterValidatedRootPrefix(
+        static_cast<std::size_t>(real_base + cl.n_root_real));
     for (int pos = cl.n_root_real; pos < n_real; ++pos) {
         const int local = real_base + pos;
         const int p = static_cast<int>(parent_decoder.NextParent1Based()) - 1;
@@ -2391,7 +2395,8 @@ void ScanOneQueryInt8Lut(const LoudsNativeCluster& cl,
 
     const float* one0 = oneptr[0];
     auto parent_decoder = cl.louds.MakeSequentialParentDecoder();
-    parent_decoder.Skip(static_cast<std::size_t>(real_base + cl.n_root_real));
+    parent_decoder.InitializeAfterValidatedRootPrefix(
+        static_cast<std::size_t>(real_base + cl.n_root_real));
     for (int pos = cl.n_root_real; pos < n_real; ++pos) {
         const int local = real_base + pos;
         const int p = static_cast<int>(parent_decoder.NextParent1Based()) - 1;

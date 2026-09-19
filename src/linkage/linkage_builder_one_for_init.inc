@@ -25,6 +25,8 @@ void LinkageFromInnerToOuterOneCodebookImpl(const LinkageBuildConfig& linkage_cf
     const int icm_round = std::max(0, linkage_cfg.icm_round);
     const auto root_percentile = static_cast<float>(linkage_cfg.root_percentile);
     const int ils_k = std::min(ils_perturb_layers, m);
+    const bool causal_single_parent =
+        IsCausalSingleParentPolicy(linkage_cfg.reference_policy);
     (void)ils_rounds;
 
     // Julia reference: cluster_indices from first layer codes (linkage_quantizer.jl:40-58).
@@ -148,6 +150,14 @@ void LinkageFromInnerToOuterOneCodebookImpl(const LinkageBuildConfig& linkage_cf
                                     knn_k,
                                     candidate_multiplier,
                                     &tls.candidates);
+
+                if (causal_single_parent) {
+                    SelectOneCausalReference(
+                        linkage_cfg.reference_policy,
+                        CausalReferenceSelectionKey(linkage_cfg.seed, code, local_idx),
+                        xi, X, cidxs, depth_local, max_depth,
+                        &tls.candidates);
+                }
 
 
                 tls.processed[static_cast<std::size_t>(pos_in_layer)] = 1;

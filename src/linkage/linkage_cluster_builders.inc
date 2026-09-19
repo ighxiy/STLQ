@@ -165,6 +165,8 @@
             const auto root_percentile = static_cast<float>(linkage_cfg.root_percentile);
             const int ils_rounds = std::max(0, linkage_cfg.ils_rounds);
             const int ils_k = std::min(std::max(0, linkage_cfg.ils_perturb_layers), m);
+            const bool causal_single_parent =
+                IsCausalSingleParentPolicy(linkage_cfg.reference_policy);
 
             if (!out_cluster || !B || !a) {
                 return;
@@ -2590,6 +2592,14 @@
                                                  candidate_multiplier,
                                                  &tls.candidates_inner,
                                                  &tls.candidates_same);
+                        if (causal_single_parent) {
+                            SelectOneCausalReference(
+                                linkage_cfg.reference_policy,
+                                CausalReferenceSelectionKey(
+                                    linkage_cfg.seed, forced_root_code, local_idx),
+                                xi, X, cluster_indices, depth_local, max_depth,
+                                &tls.candidates_inner, &tls.candidates_same);
+                        }
                         const double dt_query = prof_enabled ? (stlq::linkage::LinkageBuildWallNowS() - t0_query) : 0.0;
 
                         tls.processed[static_cast<std::size_t>(pos_in_layer)] = 1;
@@ -2676,6 +2686,15 @@
                                         knn_k,
                                         candidate_multiplier,
                                         &tls.candidates);
+
+                    if (causal_single_parent) {
+                        SelectOneCausalReference(
+                            linkage_cfg.reference_policy,
+                            CausalReferenceSelectionKey(
+                                linkage_cfg.seed, forced_root_code, local_idx),
+                            xi, X, cluster_indices, depth_local, max_depth,
+                            &tls.candidates);
+                    }
 
                     tls.processed[static_cast<std::size_t>(pos_in_layer)] = 1;
                     if (tls.candidates.empty()) {

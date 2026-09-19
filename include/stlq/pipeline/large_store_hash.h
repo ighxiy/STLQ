@@ -17,6 +17,9 @@ bool WriteU64FileHex(const std::string& path, std::uint64_t v, std::string* erro
 bool ReadNorm2SourceHash(const std::string& linkage_list_dir,
                          bool use_coeff_codec,
                          std::uint64_t* out);
+bool ReadLegacyChainNorm2SourceHash(const std::string& linkage_list_dir,
+                                    bool use_coeff_codec,
+                                    std::uint64_t* out);
 
 std::uint64_t ComputeBaseBasicStoreHash(const Config& cfg,
                                         const TrainResult& tr,
@@ -35,5 +38,10 @@ std::uint64_t ComputeLinkageListStoreHash(const Config& cfg,
 
 std::uint64_t ComputeLinkageCoeffCodecHash(const Config& cfg,
                                          std::uint64_t linkage_list_hash);
+
+// Compatibility identity for pre-rename CHAINLST archives. The codec bytes and
+// parameters are unchanged; only the historical domain-separation tag differs.
+std::uint64_t ComputeLegacyChainCoeffCodecHash(const Config& cfg,
+                                               std::uint64_t linkage_list_hash);
 
 }  // namespace stlq::app

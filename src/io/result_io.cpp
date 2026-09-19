@@ -94,6 +94,7 @@ std::string DumpConfigMini(const Config& config) {
     oss << "train.seed = " << config.train.seed << "\n";
 
     oss << "train.linkage.enabled = " << (config.train.linkage.enabled ? "true" : "false") << "\n";
+    oss << "train.linkage.reference_policy = \"" << config.train.linkage.reference_policy << "\"\n";
     oss << "train.linkage.root_percentile = " << config.train.linkage.root_percentile << "\n";
     oss << "train.linkage.num_layers = " << config.train.linkage.num_layers << "\n";
     oss << "train.linkage.max_depth = " << config.train.linkage.max_depth << "\n";
@@ -118,6 +119,7 @@ std::string DumpConfigMini(const Config& config) {
     oss << "base.encode.seed = " << config.base.encode.seed << "\n";
 
     oss << "base.linkage.enabled = " << (config.base.linkage.enabled ? "true" : "false") << "\n";
+    oss << "base.linkage.reference_policy = \"" << config.base.linkage.reference_policy << "\"\n";
     oss << "base.linkage.root_percentile = " << config.base.linkage.root_percentile << "\n";
     oss << "base.linkage.num_layers = " << config.base.linkage.num_layers << "\n";
     oss << "base.linkage.max_depth = " << config.base.linkage.max_depth << "\n";
@@ -130,6 +132,8 @@ std::string DumpConfigMini(const Config& config) {
     oss << "base.linkage.seed = " << config.base.linkage.seed << "\n";
 
     oss << "virtual.enabled = " << (config.virtual_cfg.enabled ? "true" : "false") << "\n";
+    oss << "virtual.anchor_policy = \"" << config.virtual_cfg.anchor_policy << "\"\n";
+    oss << "virtual.subkmeans_iters = " << config.virtual_cfg.subkmeans_iters << "\n";
     oss << "virtual.virtual_ratio = " << config.virtual_cfg.virtual_ratio << "\n";
     oss << "virtual.good_fraction = " << config.virtual_cfg.good_fraction << "\n";
     oss << "virtual.min_virtual = " << config.virtual_cfg.min_virtual << "\n";

@@ -76,6 +76,12 @@ std::uint64_t HashTrainModelForLinkage(const TrainResult& tr) {
 }
 
 void HashLinkageCfg(Hash64* hh, const LinkageBuildConfig& c) {
+    // Preserve the historical structured identity while binding every
+    // experimental reference forest to its actual construction policy.
+    if (c.reference_policy != "structured") {
+        hh->AddStr("reference_policy");
+        hh->AddStr(c.reference_policy);
+    }
     hh->AddF64(c.root_percentile);
     hh->AddI32(c.num_layers);
     hh->AddI32(c.max_depth);
@@ -143,9 +149,12 @@ bool WriteU64FileHex(const std::string& path, std::uint64_t v, std::string* erro
     return true;
 }
 
-bool ReadNorm2SourceHash(const std::string& linkage_list_dir,
-                         bool use_coeff_codec,
-                         std::uint64_t* out) {
+namespace {
+
+bool ReadNorm2SourceHashWithTag(const std::string& linkage_list_dir,
+                                bool use_coeff_codec,
+                                const char* identity_tag,
+                                std::uint64_t* out) {
     if (!out) {
         return false;
     }
@@ -162,11 +171,27 @@ bool ReadNorm2SourceHash(const std::string& linkage_list_dir,
         return false;
     }
     Hash64 hh;
-    hh.AddStr("linkage_norm2_source_v1");
+    hh.AddStr(identity_tag);
     hh.AddU64(store_hash);
     hh.AddU64(codec_hash);
     *out = hh.h;
     return true;
+}
+
+}  // namespace
+
+bool ReadNorm2SourceHash(const std::string& linkage_list_dir,
+                         bool use_coeff_codec,
+                         std::uint64_t* out) {
+    return ReadNorm2SourceHashWithTag(
+        linkage_list_dir, use_coeff_codec, "linkage_norm2_source_v1", out);
+}
+
+bool ReadLegacyChainNorm2SourceHash(const std::string& linkage_list_dir,
+                                    bool use_coeff_codec,
+                                    std::uint64_t* out) {
+    return ReadNorm2SourceHashWithTag(
+        linkage_list_dir, use_coeff_codec, "chain_norm2_source_v1", out);
 }
 
 std::uint64_t ComputeBaseBasicStoreHash(const Config& cfg,
@@ -239,6 +264,13 @@ std::uint64_t ComputeLinkageListStoreHash(const Config& cfg,
     HashLinkageCfg(&hh, cfg.base.linkage);
 
     hh.AddBool(cfg.virtual_cfg.enabled);
+    if (cfg.virtual_cfg.enabled && cfg.virtual_cfg.anchor_policy != "umap") {
+        hh.AddStr("virtual_anchor_policy");
+        hh.AddStr(cfg.virtual_cfg.anchor_policy);
+        if (cfg.virtual_cfg.anchor_policy == "subkmeans") {
+            hh.AddI32(cfg.virtual_cfg.subkmeans_iters);
+        }
+    }
     hh.AddF64(cfg.virtual_cfg.virtual_ratio);
     hh.AddF64(cfg.virtual_cfg.good_fraction);
     hh.AddI32(cfg.virtual_cfg.min_virtual);
@@ -262,10 +294,13 @@ std::uint64_t ComputeLinkageListStoreHash(const Config& cfg,
     return hh.h;
 }
 
-std::uint64_t ComputeLinkageCoeffCodecHash(const Config& cfg,
-                                         std::uint64_t linkage_list_hash) {
+namespace {
+
+std::uint64_t ComputeCoeffCodecHashWithTag(const Config& cfg,
+                                           std::uint64_t linkage_list_hash,
+                                           const char* identity_tag) {
     Hash64 hh;
-    hh.AddStr("linkage_coeff_codec_v1");
+    hh.AddStr(identity_tag);
     hh.AddU64(linkage_list_hash);
     hh.AddStr(cfg.large.linkage_coeff_codec.granularity);
     hh.AddVecI32(cfg.large.linkage_coeff_codec.bits_per_layer);
@@ -280,6 +315,18 @@ std::uint64_t ComputeLinkageCoeffCodecHash(const Config& cfg,
     hh.AddI32(cfg.large.linkage_coeff_codec.q_refine_max_layer);
     hh.AddI32(cfg.large.linkage_coeff_codec.q_refine_step_limit);
     return hh.h;
+}
+
+}  // namespace
+
+std::uint64_t ComputeLinkageCoeffCodecHash(const Config& cfg,
+                                         std::uint64_t linkage_list_hash) {
+    return ComputeCoeffCodecHashWithTag(cfg, linkage_list_hash, "linkage_coeff_codec_v1");
+}
+
+std::uint64_t ComputeLegacyChainCoeffCodecHash(const Config& cfg,
+                                               std::uint64_t linkage_list_hash) {
+    return ComputeCoeffCodecHashWithTag(cfg, linkage_list_hash, "chain_coeff_codec_v1");
 }
 
 }  // namespace stlq::app

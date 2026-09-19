@@ -38,6 +38,7 @@
 #include "stlq/io/fvecs_reader.h"
 #include "stlq/io/ivf_lists.h"
 #include "stlq/knn/hnsw_cluster_knn.h"
+#include "stlq/linkage/reference_forest.h"
 #include "stlq/common/logger.h"
 #include "stlq/quantizer/encoder.h"
 #include "stlq/quantizer/linear_algebra.h"
@@ -64,6 +65,7 @@ using linkage::ReaderCanReadF32;
 using linkage::ReaderCanReadU8;
 
 #include "linkage_cluster_builders.inc"
+#include "linkage_reference_forest_builder.inc"
 
 } // namespace
 
@@ -101,6 +103,23 @@ using linkage::ReaderCanReadU8;
             if (err) *err = "BuildLinkageOneCodebookVirtualInitStreamingByCluster: invalid d/m.";
             return false;
         }
+        const bool use_reference_forest = IsUnrestrictedReferenceForestPolicy(
+            cfg.train.linkage.reference_policy);
+        if (!IsSupportedTrainReferencePolicy(cfg.train.linkage.reference_policy)) {
+            if (err) {
+                *err = "Unsupported train.linkage.reference_policy: " +
+                       cfg.train.linkage.reference_policy;
+            }
+            return false;
+        }
+        if (use_reference_forest && !train.C_root.books.empty() &&
+            train.C_root.books.front().cols > 256) {
+            if (err) {
+                *err = "Reference-forest init linkage currently supports at most 256 root centroids; "
+                       "the large-root meta-only evaluator is intentionally not approximated.";
+            }
+            return false;
+        }
 
         // Init-linkage (C_root-only): large pipeline typically avoids full-precomp G(H×H) to prevent
         // catastrophic RAM growth when h0_root is large (e.g. 65536).
@@ -133,7 +152,7 @@ using linkage::ReaderCanReadU8;
                     cfg.runtime.cuda_linkage_same_dynamic_tiny_cpu &&
                     (cfg.runtime.cuda_linkage_same_dynamic_tiny_cpu_max_pairs > 0);
                 const bool allow_full_precomp = (h0_root > 0 && h0_root <= 256);
-                if (want_tiny_cpu && allow_full_precomp) {
+                if ((use_reference_forest || want_tiny_cpu) && allow_full_precomp) {
                     if (!BuildPrecomp(train.C_root, &pre_root)) {
                         if (err)
                             *err =
@@ -153,7 +172,10 @@ using linkage::ReaderCanReadU8;
             }
         }
 
-        const LinkageBuildConfig& linkage_cfg = cfg.base.linkage;
+        // Preserve the established init-stage numeric knobs, but route the new
+        // parent-reference policy through the train namespace where it belongs.
+        LinkageBuildConfig linkage_cfg = cfg.base.linkage;
+        linkage_cfg.reference_policy = cfg.train.linkage.reference_policy;
         // IMPORTANT: do NOT mix dtypes. For f32 datasets, never consume raw_u8.bin (legacy clamped output).
         // For u8 datasets, never consume raw_f32.bin.
         const bool has_raw_u8 = base_list.HasRawU8();
@@ -360,6 +382,8 @@ using linkage::ReaderCanReadU8;
         std::atomic<int> done{0};
         std::atomic<long long> last_print_ns{0};
         std::atomic<bool> ok{true};
+        std::atomic<std::uint64_t> reference_cycle_cuts{0};
+        std::atomic<std::uint64_t> reference_depth_cuts{0};
         std::string first_err;
         std::mutex err_mu;
         const bool profile_timing = cfg.large.profile_timing;
@@ -399,7 +423,7 @@ using linkage::ReaderCanReadU8;
             async_io->Start();
         }
 
-#pragma omp parallel num_threads(nth) default(none) shared(timing_tls, cpu_kernels_tls, done, last_print_ns, ok, first_err, err_mu, async_io, base_list, ivf_lists, train, cfg, linkage_cfg, runtime_init, pre_root, fallback_reader, random_writer, plan, out_cfg, cluster_real, cluster_linkaged, cluster_depth_sum, cluster_max_depth, cluster_mse_sum, cluster_mse_min, cluster_mse_max, kernels, cuda_pool_ptr) firstprivate(now_ns, progress_stream, d, m, m_codes, nlist, fixed_depth_len, allow_random_fallback, profile_timing, kernels_is_cpu, has_raw_u8, has_raw_f32)
+#pragma omp parallel num_threads(nth) default(none) shared(timing_tls, cpu_kernels_tls, done, last_print_ns, ok, reference_cycle_cuts, reference_depth_cuts, first_err, err_mu, async_io, base_list, ivf_lists, train, cfg, linkage_cfg, runtime_init, pre_root, fallback_reader, random_writer, plan, out_cfg, cluster_real, cluster_linkaged, cluster_depth_sum, cluster_max_depth, cluster_mse_sum, cluster_mse_min, cluster_mse_max, kernels, cuda_pool_ptr) firstprivate(now_ns, progress_stream, d, m, m_codes, nlist, fixed_depth_len, allow_random_fallback, profile_timing, kernels_is_cpu, has_raw_u8, has_raw_f32)
         {
             ClusterWorkBuf buf;
             const int tid = omp_get_thread_num();
@@ -466,6 +490,34 @@ using linkage::ReaderCanReadU8;
                     cluster_out.indices.clear();
                     cluster_out.parent_local.clear();
                     cluster_out.depth_offsets.assign(2, 0);
+                }
+                else if (IsUnrestrictedReferenceForestPolicy(
+                             linkage_cfg.reference_policy)) {
+                    ReferenceForest forest;
+                    const bool use_ils = linkage_cfg.use_ils && linkage_cfg.ils_rounds > 0 &&
+                                         linkage_cfg.ils_perturb_layers > 0;
+                    const bool built_ok =
+                        use_ils
+                            ? LinkageTwoCodebookReferenceForestOneCluster<true>(
+                                  linkage_cfg, cfg.hnsw, cid, Xrot,
+                                  train.C_root, pre_root, train.C_root, pre_root, pre_root.G,
+                                  &B_full, &a, &cluster_out, &ls_failures,
+                                  &cluster_linkage_mse, &cluster_mse_sum_local,
+                                  &forest, &local_err)
+                            : LinkageTwoCodebookReferenceForestOneCluster<false>(
+                                  linkage_cfg, cfg.hnsw, cid, Xrot,
+                                  train.C_root, pre_root, train.C_root, pre_root, pre_root.G,
+                                  &B_full, &a, &cluster_out, &ls_failures,
+                                  &cluster_linkage_mse, &cluster_mse_sum_local,
+                                  &forest, &local_err);
+                    if (!built_ok) {
+                        fail(local_err);
+                        return;
+                    }
+                    reference_cycle_cuts.fetch_add(
+                        static_cast<std::uint64_t>(forest.cycle_cuts), std::memory_order_relaxed);
+                    reference_depth_cuts.fetch_add(
+                        static_cast<std::uint64_t>(forest.depth_cuts), std::memory_order_relaxed);
                 }
                 else {
                     try {
@@ -936,6 +988,13 @@ using linkage::ReaderCanReadU8;
                 *err = first_err.empty() ? "BuildLinkageOneCodebookVirtualInitStreamingByCluster: failed." : first_err;
             }
             return false;
+        }
+        if (use_reference_forest) {
+            LogInfo("Reference forest init (" + linkage_cfg.reference_policy +
+                    "): cycle_cuts=" +
+                    std::to_string(reference_cycle_cuts.load(std::memory_order_relaxed)) +
+                    ", depth_cuts=" +
+                    std::to_string(reference_depth_cuts.load(std::memory_order_relaxed)));
         }
         if (!random_writer.Finish(err)) {
             return false;

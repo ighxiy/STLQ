@@ -10,6 +10,7 @@
 #include "stlq/common/logger.h"
 
 #include <filesystem>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -59,7 +60,18 @@ int RunLargeLinkageDiskEvalStage(const Config& config,
 
             const std::filesystem::path& coeff_meta = eval_plan.coeff.coeff_meta;
             const std::string coeff_hash_path = app::CodecHashPath(linkage_list_dir);
-            const std::uint64_t expected_coeff_hash = app::ComputeLinkageCoeffCodecHash(config, linkage_list_hash);
+            const std::uint64_t canonical_coeff_hash =
+                app::ComputeLinkageCoeffCodecHash(config, linkage_list_hash);
+            const std::uint64_t legacy_coeff_hash =
+                app::ComputeLegacyChainCoeffCodecHash(config, linkage_list_hash);
+            std::uint64_t expected_coeff_hash = canonical_coeff_hash;
+            std::uint64_t stored_coeff_hash = 0;
+            if (app::ReadU64File(coeff_hash_path, &stored_coeff_hash) &&
+                stored_coeff_hash != canonical_coeff_hash &&
+                stored_coeff_hash == legacy_coeff_hash) {
+                expected_coeff_hash = legacy_coeff_hash;
+                LogInfo("Using verified pre-rename chain coeff codec identity.");
+            }
 
             app::CodecStoreLifecycleOptions codec_opts;
             codec_opts.label = "coeff codec";
@@ -69,6 +81,9 @@ int RunLargeLinkageDiskEvalStage(const Config& config,
             codec_opts.expected_hash = expected_coeff_hash;
             codec_opts.has_codec_store = eval_plan.coeff.has_coeff_codec;
             codec_opts.protect_existing_outputs = config.large.protect_existing_outputs;
+            codec_opts.reuse_existing_hash_mismatch =
+                run_state.eval_only && config.io.linkage_file_set &&
+                config.large.protect_existing_outputs;
             codec_opts.has_rebuild_source = eval_plan.coeff.has_float_coeffs;
             codec_opts.rebuild_source_why_not = eval_plan.coeff.float_coeffs_why_not;
 
@@ -76,6 +91,14 @@ int RunLargeLinkageDiskEvalStage(const Config& config,
             if (!app::PrepareCodecStoreForEval(codec_opts, &codec_decision, &error)) {
                 LogError(error);
                 return 1;
+            }
+            if (codec_decision.reused_existing_hash_mismatch) {
+                std::ostringstream oss;
+                oss << "Eval-only explicit frozen store: using the codec identity actually on disk"
+                    << " (stored=0x" << std::hex << codec_decision.previous_hash
+                    << ", requested=0x" << expected_coeff_hash << std::dec
+                    << "); codec rebuild is disabled.";
+                LogWarn(oss.str());
             }
 
             bool coeff_codec_rebuilt = false;

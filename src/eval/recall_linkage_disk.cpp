@@ -1007,6 +1007,7 @@ namespace stlq
 
             double* total_scan_kernel = nullptr;
             double* total_topk_finalize = nullptr;
+            double* total_topk_finalize_worker = nullptr;
 
             double* total_scan_scale_tables = nullptr;
             double* total_scan_roots_init = nullptr;
@@ -2092,42 +2093,39 @@ namespace stlq
             if (!topk || !out) return;
             const bool want_profile = (sums && sums->enabled);
 
-            const double scan_kernel_t0 = want_profile ? omp_get_wtime() : 0.0;
+            // Production keeps each query's finalization with its scan owner.  That avoids a
+            // second parallel region/barrier, but scan and finalize then overlap across workers
+            // and have no separately additive wall-time intervals.  Profiling deliberately uses
+            // two globally separated phases so both numbers are measured outside their OpenMP
+            // regions.  The production path below remains unchanged when profiling is disabled.
+            if (want_profile) {
+                const double scan_kernel_t0 = omp_get_wtime();
 #pragma omp parallel default(none) shared(topk, out, q_cids_len, q_cids_flat, cid_to_active, active_views, qt, offsets_root_small, meta_one, scan_coeff_fn, sums) firstprivate(q0, qlen, nprobe_cap, root_small_total_cols, one_total_cols, want_profile)
-            {
-                ScanScratch scratch;
-                ScanKernelTiming timing_local{};
-                ScanKernelTiming* timing_ptr = want_profile ? &timing_local : nullptr;
+                {
+                    ScanScratch scratch;
+                    ScanKernelTiming timing_local{};
 #pragma omp for schedule(static)
-                for (int qi = 0; qi < qlen; ++qi) {
-                    TopKHeap& heap = (*topk)[static_cast<std::size_t>(qi)];
-                    const int nprobe = q_cids_len[static_cast<std::size_t>(qi)];
-                    for (int t = 0; t < nprobe; ++t) {
-                        const int cid =
-                            q_cids_flat[static_cast<std::size_t>(qi) * static_cast<std::size_t>(nprobe_cap) +
-                                static_cast<std::size_t>(t)];
-                        const int idx = cid_to_active[static_cast<std::size_t>(cid)];
-                        if (idx < 0) continue;
-                        const auto& cv = active_views[static_cast<std::size_t>(idx)];
-                        scan_coeff_fn(cv,
-                                      qt.xCq_root0.Col(qi),
-                                      offsets_root_small.data(), qt.xCq_root_small.Col(qi), root_small_total_cols,
-                                      meta_one.offsets.data(), qt.xCq_one.Col(qi), one_total_cols,
-                                      &heap,
-                                      &scratch,
-                                      timing_ptr);
+                    for (int qi = 0; qi < qlen; ++qi) {
+                        TopKHeap& heap = (*topk)[static_cast<std::size_t>(qi)];
+                        const int nprobe = q_cids_len[static_cast<std::size_t>(qi)];
+                        for (int t = 0; t < nprobe; ++t) {
+                            const int cid =
+                                q_cids_flat[static_cast<std::size_t>(qi) * static_cast<std::size_t>(nprobe_cap) +
+                                    static_cast<std::size_t>(t)];
+                            const int idx = cid_to_active[static_cast<std::size_t>(cid)];
+                            if (idx < 0) continue;
+                            const auto& cv = active_views[static_cast<std::size_t>(idx)];
+                            scan_coeff_fn(cv,
+                                          qt.xCq_root0.Col(qi),
+                                          offsets_root_small.data(), qt.xCq_root_small.Col(qi),
+                                          root_small_total_cols,
+                                          meta_one.offsets.data(), qt.xCq_one.Col(qi), one_total_cols,
+                                          &heap,
+                                          &scratch,
+                                          &timing_local);
+                        }
                     }
-                    // Each query heap is private to this OpenMP iteration.
-                    // Keep ownership through final sorting instead of
-                    // serializing all query finalizers after the parallel
-                    // scan.  This is the fixed production behavior; it does
-                    // not change candidate, distance, tie, or output order.
-                    heap.Finalize(
-                        out->dists.Col(q0 + qi),
-                        out->indices.Col(q0 + qi));
-                }
 
-                if (want_profile && sums) {
                     if (sums->total_scan_scale_tables) {
 #pragma omp atomic
                         *sums->total_scan_scale_tables += timing_local.t_scale_tables;
@@ -2157,11 +2155,63 @@ namespace stlq
                         *sums->total_scan_push_heap += timing_local.t_push_heap;
                     }
                 }
-            }
-            if (want_profile && sums && sums->total_scan_kernel) {
-                *sums->total_scan_kernel += omp_get_wtime() - scan_kernel_t0;
+                if (sums->total_scan_kernel) {
+                    *sums->total_scan_kernel += omp_get_wtime() - scan_kernel_t0;
+                }
+
+                const double finalize_t0 = omp_get_wtime();
+#pragma omp parallel default(none) shared(topk, out, sums) firstprivate(q0, qlen)
+                {
+                    double finalize_worker_local = 0.0;
+#pragma omp for schedule(static)
+                    for (int qi = 0; qi < qlen; ++qi) {
+                        const double query_finalize_t0 = omp_get_wtime();
+                        (*topk)[static_cast<std::size_t>(qi)].Finalize(
+                            out->dists.Col(q0 + qi),
+                            out->indices.Col(q0 + qi));
+                        finalize_worker_local += omp_get_wtime() - query_finalize_t0;
+                    }
+                    if (sums->total_topk_finalize_worker) {
+#pragma omp atomic
+                        *sums->total_topk_finalize_worker += finalize_worker_local;
+                    }
+                }
+                if (sums->total_topk_finalize) {
+                    *sums->total_topk_finalize += omp_get_wtime() - finalize_t0;
+                }
+                return;
             }
 
+#pragma omp parallel default(none) shared(topk, out, q_cids_len, q_cids_flat, cid_to_active, active_views, qt, offsets_root_small, meta_one, scan_coeff_fn) firstprivate(q0, qlen, nprobe_cap, root_small_total_cols, one_total_cols)
+            {
+                ScanScratch scratch;
+#pragma omp for schedule(static)
+                for (int qi = 0; qi < qlen; ++qi) {
+                    TopKHeap& heap = (*topk)[static_cast<std::size_t>(qi)];
+                    const int nprobe = q_cids_len[static_cast<std::size_t>(qi)];
+                    for (int t = 0; t < nprobe; ++t) {
+                        const int cid =
+                            q_cids_flat[static_cast<std::size_t>(qi) * static_cast<std::size_t>(nprobe_cap) +
+                                static_cast<std::size_t>(t)];
+                        const int idx = cid_to_active[static_cast<std::size_t>(cid)];
+                        if (idx < 0) continue;
+                        const auto& cv = active_views[static_cast<std::size_t>(idx)];
+                        scan_coeff_fn(cv,
+                                      qt.xCq_root0.Col(qi),
+                                      offsets_root_small.data(), qt.xCq_root_small.Col(qi), root_small_total_cols,
+                                      meta_one.offsets.data(), qt.xCq_one.Col(qi), one_total_cols,
+                                      &heap,
+                                      &scratch,
+                                      nullptr);
+                    }
+                    // Each query heap is private to this OpenMP iteration. Keep ownership through
+                    // final sorting in the production path instead of introducing another global
+                    // phase boundary.
+                    heap.Finalize(
+                        out->dists.Col(q0 + qi),
+                        out->indices.Col(q0 + qi));
+                }
+            }
         }
 
         // CPU fallback for GPU scan: compute local TopK for a subset of (query,cluster) tasks.
@@ -2987,6 +3037,7 @@ namespace stlq
         const int bench_times = std::max(1, cfg.eval.linkage_louds_huffman_bench_times);
         [[maybe_unused]] double total_scan_kernel = 0.0;
         [[maybe_unused]] double total_topk_finalize = 0.0;
+        [[maybe_unused]] double total_topk_finalize_worker = 0.0;
         [[maybe_unused]] double total_scan_scale_tables = 0.0;
         [[maybe_unused]] double total_scan_roots_init = 0.0;
         [[maybe_unused]] double total_scan_roots_layers = 0.0;
@@ -3595,6 +3646,7 @@ namespace stlq
                 scan_sums.enabled = true;
                 scan_sums.total_scan_kernel = &total_scan_kernel;
                 scan_sums.total_topk_finalize = &total_topk_finalize;
+                scan_sums.total_topk_finalize_worker = &total_topk_finalize_worker;
                 scan_sums.total_scan_scale_tables = &total_scan_scale_tables;
                 scan_sums.total_scan_roots_init = &total_scan_roots_init;
                 scan_sums.total_scan_roots_layers = &total_scan_roots_layers;
@@ -3829,6 +3881,31 @@ namespace stlq
                             " push=" + std::to_string(total_scan_push) +
                             " push_dist=" + std::to_string(total_scan_push_dist) +
                             " push_heap=" + std::to_string(total_scan_push_heap));
+
+                        // The production CPU path fuses distance generation with online heap
+                        // maintenance.  Profiling separates finalization into its own parallel
+                        // phase, then apportions the fused scan-region wall time using active
+                        // worker time.  This produces an additive logical Scan/TopK breakdown
+                        // without materializing every candidate distance.  It is intentionally
+                        // labelled normalized rather than directly measured wall time.
+                        const double scan_worker =
+                            total_scan_scale_tables + total_scan_roots_init + total_scan_roots_layers +
+                            total_scan_linkage + std::max(0.0, total_scan_push - total_scan_push_heap);
+                        const double online_topk_worker = total_scan_push_heap;
+                        const double fused_worker = scan_worker + online_topk_worker;
+                        const double online_topk_wall =
+                            (fused_worker > 0.0)
+                                ? total_scan_kernel * online_topk_worker / fused_worker
+                                : 0.0;
+                        const double logical_scan_wall = std::max(0.0, total_scan_kernel - online_topk_wall);
+                        const double logical_topk_wall = online_topk_wall + total_topk_finalize;
+                        LogInfo("Disk IVF linkage topk worker breakdown (sum over threads): online_heap=" +
+                            std::to_string(online_topk_worker) +
+                            " finalize=" + std::to_string(total_topk_finalize_worker));
+                        LogInfo("Disk IVF linkage logical scan/topk breakdown (normalized wall; "
+                            "topk=online_heap+finalize): scan=" + std::to_string(logical_scan_wall) +
+                            " topk=" + std::to_string(logical_topk_wall) +
+                            " total=" + std::to_string(logical_scan_wall + logical_topk_wall));
                     }
                 }
                 else {

@@ -500,7 +500,11 @@ bool LinkageListReader::Open(const std::string& dir, std::string* err) {
         if (err) *err = "LinkageListReader::Open: failed to read meta.bin header.";
         return false;
     }
-    if (std::memcmp(pfx.magic, "LINKAGELST", 8) != 0 ||
+    const bool is_linkage_magic = std::memcmp(pfx.magic, "LINKAGELST", 8) == 0;
+    // CHAINLST is the pre-rename spelling of the same on-disk layout.  Keep the
+    // writer canonical, but accept archived stores produced before the rename.
+    const bool is_legacy_chain_magic = std::memcmp(pfx.magic, "CHAINLST", 8) == 0;
+    if ((!is_linkage_magic && !is_legacy_chain_magic) ||
         (pfx.version != 2 && pfx.version != 3 && pfx.version != 4)) {
         if (err) *err = "LinkageListReader::Open: unsupported meta.bin.";
         return false;

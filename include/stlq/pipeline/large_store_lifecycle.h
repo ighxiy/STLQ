@@ -65,6 +65,10 @@ struct CodecStoreLifecycleOptions {
 
     bool has_codec_store = false;
     bool protect_existing_outputs = false;
+    // An explicit eval-only frozen-store request may evaluate the codec that is
+    // actually present even when the producer recipe in the current config no
+    // longer reproduces its identity.  This never authorizes rebuilding it.
+    bool reuse_existing_hash_mismatch = false;
     bool has_rebuild_source = false;
     std::string rebuild_source_why_not;
 };
@@ -72,6 +76,7 @@ struct CodecStoreLifecycleOptions {
 struct CodecStoreLifecycleDecision {
     bool hash_present = false;
     bool hash_matches = false;
+    bool reused_existing_hash_mismatch = false;
     bool needs_rebuild = false;
     std::uint64_t previous_hash = 0;
 };

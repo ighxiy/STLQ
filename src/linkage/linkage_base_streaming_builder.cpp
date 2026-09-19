@@ -41,6 +41,7 @@
 #include "stlq/io/fvecs_reader.h"
 #include "stlq/io/ivf_lists.h"
 #include "stlq/knn/hnsw_cluster_knn.h"
+#include "stlq/linkage/reference_forest.h"
 #include "stlq/common/logger.h"
 #include "stlq/quantizer/encoder.h"
 #include "stlq/quantizer/linear_algebra.h"
@@ -73,6 +74,7 @@ namespace stlq
         using linkage::SolveSymPosdefCholeskyRetry;
 
 #include "linkage_cluster_builders.inc"
+#include "linkage_reference_forest_builder.inc"
 
     } // namespace
 
@@ -117,6 +119,39 @@ namespace stlq
             if (err) *err = "BuildLinkageTwoCodebookVirtualStreamingByCluster: invalid d/m.";
             return false;
         }
+        const bool use_reference_forest = IsUnrestrictedReferenceForestPolicy(
+            cfg.base.linkage.reference_policy);
+        if (!IsSupportedReferencePolicy(cfg.base.linkage.reference_policy)) {
+            if (err) {
+                *err = "Unsupported base.linkage.reference_policy: " +
+                       cfg.base.linkage.reference_policy;
+            }
+            return false;
+        }
+        if (cfg.base.linkage.reference_policy != "structured" &&
+            cfg.virtual_cfg.enabled) {
+            if (err) {
+                *err = "Non-structured parent-policy ablations require virtual.enabled=false so the "
+                       "parent policy is not confounded by synthetic roots.";
+            }
+            return false;
+        }
+        if (cfg.virtual_cfg.enabled && cfg.virtual_cfg.anchor_policy != "umap" &&
+            cfg.virtual_cfg.anchor_policy != "subkmeans") {
+            if (err) {
+                *err = "Unsupported virtual.anchor_policy: " +
+                       cfg.virtual_cfg.anchor_policy;
+            }
+            return false;
+        }
+        if (use_reference_forest && !train.C_root.books.empty() &&
+            train.C_root.books.front().cols > 256) {
+            if (err) {
+                *err = "Reference-forest large streaming currently supports at most 256 root centroids; "
+                       "the large-root meta-only evaluator is intentionally not approximated.";
+            }
+            return false;
+        }
 
         // Large pipeline: by default we avoid full-precomp (G(H×H)) for C_root/C_one and use the large-root CUDA
         // evaluator path. However, we still want the pipeline to be runnable without CUDA for smaller workloads.
@@ -137,7 +172,8 @@ namespace stlq
             // Large pipeline default: do not build full-precomp (G(H×H)) for C_root.
             // CPU-only fallback: if virtual nodes are enabled, CPU UMAP-center encoding requires full-precomp(G).
             // This choice is controlled externally via config (virtual.enabled / runtime.use_cuda).
-            const bool want_full_precomp_root = cpu_fallback_large && cfg.virtual_cfg.enabled;
+            const bool want_full_precomp_root =
+                use_reference_forest || (cpu_fallback_large && cfg.virtual_cfg.enabled);
             if (want_full_precomp_root) {
                 if (!BuildPrecomp(train.C_root, &pre_root)) {
                     if (err) {
@@ -166,7 +202,7 @@ namespace stlq
             const bool want_tiny_cpu =
                 cfg.runtime.cuda_linkage_same_dynamic_tiny_cpu &&
                 (cfg.runtime.cuda_linkage_same_dynamic_tiny_cpu_max_pairs > 0);
-            if (want_tiny_cpu || cpu_fallback_large) {
+            if (use_reference_forest || want_tiny_cpu || cpu_fallback_large) {
                 if (!BuildPrecomp(train.C_one, &pre_one)) {
                     if (err)
                         *err =
@@ -627,6 +663,10 @@ namespace stlq
         std::vector<double> cluster_mse_sum(static_cast<std::size_t>(nlist), 0.0);
         std::vector<double> cluster_mse_min(static_cast<std::size_t>(nlist), std::numeric_limits<double>::infinity());
         std::vector<double> cluster_mse_max(static_cast<std::size_t>(nlist), 0.0);
+        std::vector<double> cluster_anchor_sse(static_cast<std::size_t>(nlist), 0.0);
+        std::vector<double> cluster_anchor_encoding_sse(static_cast<std::size_t>(nlist), 0.0);
+        std::vector<std::uint64_t> cluster_anchor_points(static_cast<std::size_t>(nlist), 0);
+        std::vector<std::uint64_t> cluster_anchor_centers(static_cast<std::size_t>(nlist), 0);
 
         if (use_linkage_ckpt && resume_writers) {
             std::string ckpt_err;
@@ -663,6 +703,8 @@ namespace stlq
         std::atomic<int> done{0};
         std::atomic<long long> last_print_ns{0};
         std::atomic<bool> ok{true};
+        std::atomic<std::uint64_t> reference_cycle_cuts{0};
+        std::atomic<std::uint64_t> reference_depth_cuts{0};
         std::string first_err;
         std::mutex err_mu;
 
@@ -718,7 +760,7 @@ namespace stlq
 
         std::atomic<int> next_cid{0};
 
-#pragma omp parallel num_threads(nth) default(none) shared(timing_tls, cpu_kernels_tls, done, last_print_ns, ok, first_err, err_mu, next_cid, async_io, ckpt, base_list, ivf_lists, train, cfg, linkage_cfg, umap_reencode_cfg, pre_root, pre_one, G_one_root, is_bad, fallback_reader, random_writer, coeff_writer, coeff_meta, coeff_pre, coeff_scales_ones, coeff_lens_zeros, coeff_payload_empty, plan, out_cfg, cluster_real, cluster_linkaged, cluster_depth_sum, cluster_max_depth, cluster_mse_sum, cluster_mse_min, cluster_mse_max, kernels, cuda_pool_ptr) firstprivate(now_ns, progress_stream, d, m, m_codes, nlist, fixed_depth_len, allow_random_fallback, profile_timing, kernels_is_cpu, has_raw_u8, has_raw_f32, use_coeff_codec, use_linkage_ckpt)
+#pragma omp parallel num_threads(nth) default(none) shared(timing_tls, cpu_kernels_tls, done, last_print_ns, ok, reference_cycle_cuts, reference_depth_cuts, first_err, err_mu, next_cid, async_io, ckpt, base_list, ivf_lists, train, cfg, linkage_cfg, umap_reencode_cfg, pre_root, pre_one, G_one_root, is_bad, fallback_reader, random_writer, coeff_writer, coeff_meta, coeff_pre, coeff_scales_ones, coeff_lens_zeros, coeff_payload_empty, plan, out_cfg, cluster_real, cluster_linkaged, cluster_depth_sum, cluster_max_depth, cluster_mse_sum, cluster_mse_min, cluster_mse_max, cluster_anchor_sse, cluster_anchor_encoding_sse, cluster_anchor_points, cluster_anchor_centers, kernels, cuda_pool_ptr) firstprivate(now_ns, progress_stream, d, m, m_codes, nlist, fixed_depth_len, allow_random_fallback, profile_timing, kernels_is_cpu, has_raw_u8, has_raw_f32, use_coeff_codec, use_linkage_ckpt)
         {
             ClusterWorkBuf buf;
             const int tid = omp_get_thread_num();
@@ -1010,6 +1052,36 @@ namespace stlq
                     cluster_out.parent_local.clear();
                     cluster_out.depth_offsets.assign(2, 0);
                 }
+                else if (IsUnrestrictedReferenceForestPolicy(
+                             linkage_cfg.reference_policy)) {
+                    const double t0_linkage = profile_timing ? now_s() : 0.0;
+                    ReferenceForest forest;
+                    const bool use_ils = linkage_cfg.use_ils && linkage_cfg.ils_rounds > 0 &&
+                                         linkage_cfg.ils_perturb_layers > 0;
+                    const bool built_ok =
+                        use_ils
+                            ? LinkageTwoCodebookReferenceForestOneCluster<true>(
+                                  linkage_cfg, cfg.hnsw, cid, Xrot,
+                                  train.C_root, pre_root, train.C_one, pre_one, G_one_root,
+                                  &B_full, &a, &cluster_out, &ls_failures,
+                                  &cluster_linkage_mse, &cluster_mse_sum_local,
+                                  &forest, &local_err)
+                            : LinkageTwoCodebookReferenceForestOneCluster<false>(
+                                  linkage_cfg, cfg.hnsw, cid, Xrot,
+                                  train.C_root, pre_root, train.C_one, pre_one, G_one_root,
+                                  &B_full, &a, &cluster_out, &ls_failures,
+                                  &cluster_linkage_mse, &cluster_mse_sum_local,
+                                  &forest, &local_err);
+                    if (!built_ok) {
+                        fail(local_err);
+                        continue;
+                    }
+                    reference_cycle_cuts.fetch_add(
+                        static_cast<std::uint64_t>(forest.cycle_cuts), std::memory_order_relaxed);
+                    reference_depth_cuts.fetch_add(
+                        static_cast<std::uint64_t>(forest.depth_cuts), std::memory_order_relaxed);
+                    if (profile_timing) t_time.linkage_core += now_s() - t0_linkage;
+                }
                 else if (cfg.virtual_cfg.enabled && is_bad[static_cast<std::size_t>(cid)] && n_real > 1) {
                     // Bad cluster: build kNN table once, run UMAP-like virtual roots, then multi-center linkageing.
                     const int mult_bad = std::max(1, cfg.hnsw.candidate_multiplier_bad);
@@ -1045,7 +1117,8 @@ namespace stlq
                     const auto seed =
                         static_cast<std::uint32_t>(umap_reencode_cfg.seed + 1337u * static_cast<std::uint32_t>(cid) +
                             17u);
-                    if (!AddVirtualRootsUmapReencodeClusterFromKnnTables(cfg.virtual_cfg,
+                    VirtualAnchorStats anchor_stats;
+                    if (!AddVirtualRootsReencodeClusterFromKnnTables(cfg.virtual_cfg,
                                                                          train.C_root,
                                                                          pre_root,
 #if defined(STLQ_ENABLE_CUDA)
@@ -1070,9 +1143,17 @@ namespace stlq
                                                                          &X_virt,
                                                                          &B_virt,
                                                                          &a_virt,
-                                                                         &local_err)) {
+                                                                         &local_err,
+                                                                         &anchor_stats)) {
                         fail(local_err);
                         continue;
+                    }
+                    if (anchor_stats.has_euclidean_sse) {
+                        cluster_anchor_sse[static_cast<std::size_t>(cid)] = anchor_stats.euclidean_sse;
+                        cluster_anchor_encoding_sse[static_cast<std::size_t>(cid)] =
+                            anchor_stats.encoding_sse;
+                        cluster_anchor_points[static_cast<std::size_t>(cid)] = anchor_stats.source_points;
+                        cluster_anchor_centers[static_cast<std::size_t>(cid)] = anchor_stats.centers;
                     }
                     if (stlq::linkage::LinkageBuildProfileEnabled()) {
                         t_time.prof.bad_umap_s += stlq::linkage::LinkageBuildWallNowS() - t0_bad_umap;
@@ -1895,6 +1976,39 @@ namespace stlq
                 *err = first_err.empty() ? "BuildLinkageTwoCodebookVirtualStreamingByCluster: failed." : first_err;
             }
             return false;
+        }
+        if (use_reference_forest) {
+            LogInfo("Reference forest (" + linkage_cfg.reference_policy +
+                    "): cycle_cuts=" +
+                    std::to_string(reference_cycle_cuts.load(std::memory_order_relaxed)) +
+                    ", depth_cuts=" +
+                    std::to_string(reference_depth_cuts.load(std::memory_order_relaxed)));
+        }
+        if (cfg.virtual_cfg.enabled && cfg.virtual_cfg.anchor_policy == "subkmeans") {
+            double total_sse = 0.0;
+            double total_encoding_sse = 0.0;
+            std::uint64_t total_points = 0;
+            std::uint64_t total_centers = 0;
+            for (int cid = 0; cid < nlist; ++cid) {
+                const auto i = static_cast<std::size_t>(cid);
+                total_sse += cluster_anchor_sse[i];
+                total_encoding_sse += cluster_anchor_encoding_sse[i];
+                total_points += cluster_anchor_points[i];
+                total_centers += cluster_anchor_centers[i];
+            }
+            const double mean = total_points > 0
+                                    ? total_sse / static_cast<double>(total_points)
+                                    : 0.0;
+            LogInfo(std::string("Classic sub-kmeans objective") +
+                    (resume_writers ? " (clusters processed in this resumed run only)" : "") +
+                    ": SSE=" + FormatFloatLocal(total_sse, 6) +
+                    " mean_squared_distance=" + FormatFloatLocal(mean, 6) +
+                    " center_encoding_mse=" +
+                    FormatFloatLocal(total_centers > 0
+                                         ? total_encoding_sse / static_cast<double>(total_centers)
+                                         : 0.0, 6) +
+                    " source_points=" + std::to_string(total_points) +
+                    " centers=" + std::to_string(total_centers));
         }
         if (!random_writer.Finish(err)) {
             return false;

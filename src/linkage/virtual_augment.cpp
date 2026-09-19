@@ -105,6 +105,132 @@ namespace stlq
                                                      std::vector<int>* forced_codes,
                                                      std::string* error);
 
+        std::uint64_t Mix64(std::uint64_t x) {
+            x += 0x9e3779b97f4a7c15ULL;
+            x = (x ^ (x >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+            x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
+            return x ^ (x >> 31U);
+        }
+
+        bool BuildClassicSubkmeansCenters(const VirtualConfig& vcfg,
+                                          const ColMajorMatrix<float>& X,
+                                          const std::vector<int>& cluster_cols,
+                                          int k_virtual,
+                                          int forced_root_code,
+                                          std::uint32_t seed,
+                                          ColMajorMatrix<float>* centers,
+                                          std::vector<int>* forced_codes,
+                                          std::string* error) {
+            if (!centers || !forced_codes) {
+                if (error) *error = "BuildClassicSubkmeansCenters: null output.";
+                return false;
+            }
+            const int d = X.rows;
+            const int n = static_cast<int>(cluster_cols.size());
+            if (d <= 0 || n <= 0 || k_virtual <= 0) {
+                *centers = {};
+                forced_codes->clear();
+                return true;
+            }
+            if (vcfg.subkmeans_iters <= 0) {
+                if (error) *error = "virtual.subkmeans_iters must be positive.";
+                return false;
+            }
+
+            const int k = std::min(k_virtual, n);
+            ColMajorMatrix<float> current(d, k);
+            std::vector<float> nearest_dist2(static_cast<std::size_t>(n),
+                                             std::numeric_limits<float>::infinity());
+            std::vector<std::uint8_t> selected(static_cast<std::size_t>(n), 0);
+
+            // Deterministic farthest-first initialization. The seed chooses only
+            // the first data point; all later choices use exact Euclidean distance
+            // and stable local-id tie breaking.
+            int next = static_cast<int>(Mix64(static_cast<std::uint64_t>(seed) ^
+                                              static_cast<std::uint64_t>(forced_root_code)) %
+                                        static_cast<std::uint64_t>(n));
+            for (int c = 0; c < k; ++c) {
+                selected[static_cast<std::size_t>(next)] = 1;
+                const float* src = X.Col(cluster_cols[static_cast<std::size_t>(next)]);
+                std::memcpy(current.Col(c), src, sizeof(float) * static_cast<std::size_t>(d));
+                float farthest = -1.0f;
+                int farthest_id = 0;
+                for (int i = 0; i < n; ++i) {
+                    const float dist2 = SquaredL2(
+                        X.Col(cluster_cols[static_cast<std::size_t>(i)]), src, d);
+                    nearest_dist2[static_cast<std::size_t>(i)] =
+                        std::min(nearest_dist2[static_cast<std::size_t>(i)], dist2);
+                    if (!selected[static_cast<std::size_t>(i)] &&
+                        nearest_dist2[static_cast<std::size_t>(i)] > farthest) {
+                        farthest = nearest_dist2[static_cast<std::size_t>(i)];
+                        farthest_id = i;
+                    }
+                }
+                next = farthest_id;
+            }
+
+            std::vector<int> assignment(static_cast<std::size_t>(n), 0);
+            std::vector<float> assigned_dist2(static_cast<std::size_t>(n), 0.0f);
+            std::vector<double> sums(static_cast<std::size_t>(k) * static_cast<std::size_t>(d), 0.0);
+            std::vector<int> counts(static_cast<std::size_t>(k), 0);
+            std::vector<std::uint8_t> claimed(static_cast<std::size_t>(n), 0);
+
+            for (int iter = 0; iter < vcfg.subkmeans_iters; ++iter) {
+                std::fill(sums.begin(), sums.end(), 0.0);
+                std::fill(counts.begin(), counts.end(), 0);
+                for (int i = 0; i < n; ++i) {
+                    const float* x = X.Col(cluster_cols[static_cast<std::size_t>(i)]);
+                    float best_dist2 = std::numeric_limits<float>::infinity();
+                    int best = 0;
+                    for (int c = 0; c < k; ++c) {
+                        const float dist2 = SquaredL2(x, current.Col(c), d);
+                        if (dist2 < best_dist2) {
+                            best_dist2 = dist2;
+                            best = c;
+                        }
+                    }
+                    assignment[static_cast<std::size_t>(i)] = best;
+                    assigned_dist2[static_cast<std::size_t>(i)] = best_dist2;
+                    counts[static_cast<std::size_t>(best)] += 1;
+                    double* dst = sums.data() + static_cast<std::size_t>(best) * static_cast<std::size_t>(d);
+                    for (int r = 0; r < d; ++r) dst[r] += static_cast<double>(x[r]);
+                }
+
+                std::fill(claimed.begin(), claimed.end(), 0);
+                for (int c = 0; c < k; ++c) {
+                    float* dst = current.Col(c);
+                    const int count = counts[static_cast<std::size_t>(c)];
+                    if (count > 0) {
+                        const double inv = 1.0 / static_cast<double>(count);
+                        const double* src = sums.data() +
+                            static_cast<std::size_t>(c) * static_cast<std::size_t>(d);
+                        for (int r = 0; r < d; ++r) dst[r] = static_cast<float>(src[r] * inv);
+                        continue;
+                    }
+
+                    // Deterministic empty-cluster repair: split off the point with
+                    // the largest current assignment error, stable local-id tie.
+                    int farthest_id = -1;
+                    float farthest = -1.0f;
+                    for (int i = 0; i < n; ++i) {
+                        if (!claimed[static_cast<std::size_t>(i)] &&
+                            assigned_dist2[static_cast<std::size_t>(i)] > farthest) {
+                            farthest = assigned_dist2[static_cast<std::size_t>(i)];
+                            farthest_id = i;
+                        }
+                    }
+                    if (farthest_id < 0) farthest_id = c % n;
+                    claimed[static_cast<std::size_t>(farthest_id)] = 1;
+                    const float* src = X.Col(cluster_cols[static_cast<std::size_t>(farthest_id)]);
+                    std::memcpy(dst, src, sizeof(float) * static_cast<std::size_t>(d));
+                }
+            }
+
+            *centers = std::move(current);
+            forced_codes->assign(static_cast<std::size_t>(k), forced_root_code);
+            return true;
+        }
+
         // Returns pdir for directed edges i->neighbor (neighbors exclude self, length k_graph).
         [[maybe_unused]] void UmapRhoSigma(const float* dists_flat,
                                            int n_local,
@@ -1486,7 +1612,56 @@ namespace stlq
         return std::max(0, k);
     }
 
-    bool AddVirtualRootsUmapReencodeClusterFromKnnTables(const VirtualConfig& vcfg,
+    bool BuildVirtualAnchorCentersFromKnnTables(
+        const VirtualConfig& vcfg,
+        const ColMajorMatrix<float>& X,
+        const std::vector<int>& cluster_cols,
+        const std::vector<std::uint32_t>& knn_ids_flat,
+        const std::vector<float>& knn_dists_flat,
+        int k_graph_total,
+        int k_graph_umap,
+        int k_virtual,
+        int forced_root_code,
+        std::uint32_t seed,
+        ColMajorMatrix<float>* centers,
+        std::vector<int>* forced_codes,
+        std::string* error,
+        VirtualAnchorStats* stats) {
+        if (stats) *stats = {};
+        if (vcfg.anchor_policy == "umap") {
+            return BuildUmapCentersForClusterFromKnnTables(
+                vcfg, X, cluster_cols, knn_ids_flat, knn_dists_flat,
+                k_graph_total, k_graph_umap, k_virtual, forced_root_code,
+                centers, forced_codes, error);
+        }
+        if (vcfg.anchor_policy == "subkmeans") {
+            if (!BuildClassicSubkmeansCenters(vcfg, X, cluster_cols, k_virtual,
+                                              forced_root_code, seed,
+                                              centers, forced_codes, error)) {
+                return false;
+            }
+            if (stats) {
+                stats->has_euclidean_sse = true;
+                stats->source_points = cluster_cols.size();
+                stats->centers = static_cast<std::uint64_t>(std::max(0, centers->cols));
+                double sse = 0.0;
+                for (int local = 0; local < static_cast<int>(cluster_cols.size()); ++local) {
+                    const float* x = X.Col(cluster_cols[static_cast<std::size_t>(local)]);
+                    float best = std::numeric_limits<float>::infinity();
+                    for (int c = 0; c < centers->cols; ++c) {
+                        best = std::min(best, SquaredL2(x, centers->Col(c), X.rows));
+                    }
+                    sse += static_cast<double>(best);
+                }
+                stats->euclidean_sse = sse;
+            }
+            return true;
+        }
+        if (error) *error = "Unsupported virtual.anchor_policy: " + vcfg.anchor_policy;
+        return false;
+    }
+
+    bool AddVirtualRootsReencodeClusterFromKnnTables(const VirtualConfig& vcfg,
                                                          const CodebookPack& codebooks,
                                                          const Precomp& precomp,
                                                          const RuntimeConfig* runtime_cfg,
@@ -1507,12 +1682,13 @@ namespace stlq
                                                          ColMajorMatrix<float>* X_virtual,
                                                          ColMajorMatrix<FullCode>* B_virtual,
                                                          ColMajorMatrix<float>* a_virtual,
-                                                         std::string* error) {
+                                                         std::string* error,
+                                                         VirtualAnchorStats* stats) {
         (void)runtime_cfg;
         (void)cuda_pool;
         if (!X_virtual || !B_virtual || !a_virtual) {
             if (error) {
-                *error = "AddVirtualRootsUmapReencodeClusterFromKnnTables: null output.";
+                *error = "AddVirtualRootsReencodeClusterFromKnnTables: null output.";
             }
             return false;
         }
@@ -1524,10 +1700,10 @@ namespace stlq
         }
         ColMajorMatrix<float> centers;
         std::vector<int> forced_codes;
-        if (!BuildUmapCentersForClusterFromKnnTables(vcfg, X, cluster_cols,
-                                                     knn_ids_flat, knn_dists_flat, k_graph_total, k_graph_umap,
-                                                     k_virtual, forced_root_code,
-                                                     &centers, &forced_codes, error)) {
+        if (!BuildVirtualAnchorCentersFromKnnTables(
+                vcfg, X, cluster_cols, knn_ids_flat, knn_dists_flat,
+                k_graph_total, k_graph_umap, k_virtual, forced_root_code,
+                seed, &centers, &forced_codes, error, stats)) {
             return false;
         }
         if (centers.cols <= 0) {
@@ -1568,15 +1744,17 @@ namespace stlq
                 bool expected = false;
                 if (did_warn.compare_exchange_strong(expected, true, std::memory_order_relaxed)) {
                     LogWarn(
-                        "UMAP virtual roots: skipped because full-precomp(G) is unavailable and CUDA is disabled. "
-                        "To enable UMAP virtual roots, build/enable CUDA (runtime.use_cuda=1) or disable virtual nodes (virtual.enabled=0).");
+                        "Virtual anchors (" + vcfg.anchor_policy +
+                        "): skipped because full-precomp(G) is unavailable and CUDA is disabled. "
+                        "To enable virtual anchors, build/enable CUDA (runtime.use_cuda=1) or disable virtual nodes "
+                        "(virtual.enabled=0).");
                 }
                 *X_virtual = {};
                 *B_virtual = {};
                 *a_virtual = {};
                 if (error) {
                     *error =
-                        "AddVirtualRootsUmapReencodeClusterFromKnnTables: skipped (missing full-precomp G; CUDA disabled).";
+                        "AddVirtualRootsReencodeClusterFromKnnTables: skipped (missing full-precomp G; CUDA disabled).";
                 }
                 return true;
             }
@@ -1596,6 +1774,21 @@ namespace stlq
                 prof->bad_umap_encode_max_cluster_n_centers = centers.cols;
             }
         }
+        if (ok && stats && X_virtual &&
+            X_virtual->rows == centers.rows && X_virtual->cols == centers.cols) {
+            double encoding_sse = 0.0;
+            for (int i = 0; i < centers.cols; ++i) {
+                const float* target = centers.Col(i);
+                const float* encoded = X_virtual->Col(i);
+                for (int r = 0; r < centers.rows; ++r) {
+                    const double diff = static_cast<double>(target[r]) -
+                                        static_cast<double>(encoded[r]);
+                    encoding_sse += diff * diff;
+                }
+            }
+            stats->has_encoding_sse = true;
+            stats->encoding_sse = encoding_sse;
+        }
         return ok;
     }
 
@@ -1608,6 +1801,14 @@ namespace stlq
                          VirtualEncoding* virt_out,
                          BadClusterKnnCache* knn_cache_out,
                          std::string* error) {
+        if (config.virtual_cfg.anchor_policy != "umap" &&
+            config.virtual_cfg.anchor_policy != "subkmeans") {
+            if (error) {
+                *error = "Unsupported virtual.anchor_policy: " +
+                         config.virtual_cfg.anchor_policy;
+            }
+            return false;
+        }
         if (virt_out == nullptr) {
             if (error) {
                 *error = "AddVirtualNodes received null pointers.";
@@ -1693,14 +1894,15 @@ namespace stlq
             return a < b;
         });
         if (est_total_virtual <= 0) {
-            LogInfo("UMAP virtual roots: none selected.");
+            LogInfo("Virtual anchors (" + config.virtual_cfg.anchor_policy + "): none selected.");
             *virt_out = {};
             if (knn_cache_out) {
                 knn_cache_out->Clear();
             }
             return true;
         }
-        LogInfo("UMAP virtual roots: estimated centers to encode = " + std::to_string(est_total_virtual));
+        LogInfo("Virtual anchors (" + config.virtual_cfg.anchor_policy +
+                "): estimated centers to encode = " + std::to_string(est_total_virtual));
 
         VirtualEncoding virt;
         virt.m = m;
@@ -1721,10 +1923,11 @@ namespace stlq
 
         std::atomic<int> done{0};
         std::atomic<bool> ok{true};
+        std::vector<VirtualAnchorStats> anchor_stats(static_cast<std::size_t>(nlist));
         std::string first_error;
         std::atomic_flag has_error = ATOMIC_FLAG_INIT;
 
-#pragma omp parallel default(none) shared(codebooks, precomp, X_real, base_real, config, cluster_cols, bad_cids, k_per_cluster, virt, cache, knn_cache_out, done, ok, first_error, has_error) firstprivate(d, n_real, m, nlist)
+#pragma omp parallel default(none) shared(codebooks, precomp, X_real, base_real, config, cluster_cols, bad_cids, k_per_cluster, virt, cache, anchor_stats, knn_cache_out, done, ok, first_error, has_error) firstprivate(d, n_real, m, nlist)
         {
             ColMajorMatrix<float> centers_c;
             std::vector<int> forced_c;
@@ -1779,21 +1982,20 @@ namespace stlq
                     continue;
                 }
 
-                if (!BuildUmapCentersForClusterFromKnnTables(config.virtual_cfg,
-                                                             X_real,
-                                                             cols,
-                                                             *ids_out,
-                                                             dists_flat,
-                                                             knn_real,
-                                                             knn_umap,
-                                                             k_virtual,
-                                                             cid,
-                                                             &centers_c,
-                                                             &forced_c,
-                                                             &local_error)) {
+                const std::uint32_t anchor_seed = static_cast<std::uint32_t>(
+                    config.base.encode.seed + 1337 * cid + 17);
+                const bool centers_ok = BuildVirtualAnchorCentersFromKnnTables(
+                    config.virtual_cfg, X_real, cols, *ids_out, dists_flat,
+                    knn_real, knn_umap, k_virtual, cid, anchor_seed,
+                    &centers_c, &forced_c, &local_error,
+                    &anchor_stats[static_cast<std::size_t>(cid)]);
+                if (!centers_ok) {
                     ok.store(false, std::memory_order_relaxed);
                     if (!has_error.test_and_set(std::memory_order_relaxed)) {
-                        first_error = local_error.empty() ? "UMAP centers build failed." : local_error;
+                        first_error = local_error.empty()
+                                          ? "Unsupported or failed virtual.anchor_policy: " +
+                                                config.virtual_cfg.anchor_policy
+                                          : local_error;
                     }
                     continue;
                 }
@@ -1803,6 +2005,7 @@ namespace stlq
 
                 ColMajorMatrix<FullCode> B_virtual;
                 ColMajorMatrix<float> a_virtual;
+                ColMajorMatrix<float> encoded_centers;
                 const bool prof_en2 = stlq::linkage::LinkageBuildProfileEnabled();
                 auto* prof2 = prof_en2 ? stlq::linkage::GetLinkageBuildProfileTls() : nullptr;
                 const double t0_encode_cluster = prof_en2 ? stlq::linkage::LinkageBuildWallNowS() : 0.0;
@@ -1811,13 +2014,26 @@ namespace stlq
                                                 config.base.encode.icm_iters,
                                                 config.base.encode.perturb_k,
                                                 static_cast<std::uint32_t>(config.base.encode.seed),
-                                                nullptr, &B_virtual, &a_virtual, &local_error)) {
+                                                &encoded_centers, &B_virtual, &a_virtual, &local_error)) {
                     ok.store(false, std::memory_order_relaxed);
                     if (!has_error.test_and_set(std::memory_order_relaxed)) {
                         first_error = local_error.empty() ? "Virtual encoding failed." : local_error;
                     }
                     continue;
                 }
+                auto& stats = anchor_stats[static_cast<std::size_t>(cid)];
+                double encoding_sse = 0.0;
+                for (int i = 0; i < centers_c.cols; ++i) {
+                    const float* target = centers_c.Col(i);
+                    const float* encoded = encoded_centers.Col(i);
+                    for (int r = 0; r < centers_c.rows; ++r) {
+                        const double diff = static_cast<double>(target[r]) -
+                                            static_cast<double>(encoded[r]);
+                        encoding_sse += diff * diff;
+                    }
+                }
+                stats.has_encoding_sse = true;
+                stats.encoding_sse = encoding_sse;
                 if (prof2) {
                     const double dt = stlq::linkage::LinkageBuildWallNowS() - t0_encode_cluster;
                     if (dt > prof2->bad_umap_encode_max_cluster_s) {
@@ -1849,8 +2065,33 @@ namespace stlq
             return false;
         }
 
-        LogInfo("UMAP virtual roots: encoded virtual=" + std::to_string(virt_cols) +
+        LogInfo("Virtual anchors (" + config.virtual_cfg.anchor_policy + "): encoded virtual=" +
+            std::to_string(virt_cols) +
             " (real=" + std::to_string(n_real) + ")");
+        if (config.virtual_cfg.anchor_policy == "subkmeans") {
+            double total_sse = 0.0;
+            double total_encoding_sse = 0.0;
+            std::uint64_t total_points = 0;
+            std::uint64_t total_centers = 0;
+            for (const auto& stats : anchor_stats) {
+                if (!stats.has_euclidean_sse) continue;
+                total_sse += stats.euclidean_sse;
+                if (stats.has_encoding_sse) total_encoding_sse += stats.encoding_sse;
+                total_points += stats.source_points;
+                total_centers += stats.centers;
+            }
+            const double mean = total_points > 0
+                                    ? total_sse / static_cast<double>(total_points)
+                                    : 0.0;
+            LogInfo("Classic sub-kmeans objective: SSE=" + std::to_string(total_sse) +
+                    ", mean_squared_distance=" + std::to_string(mean) +
+                    ", center_encoding_mse=" +
+                    std::to_string(total_centers > 0
+                                       ? total_encoding_sse / static_cast<double>(total_centers)
+                                       : 0.0) +
+                    ", source_points=" + std::to_string(total_points) +
+                    ", centers=" + std::to_string(total_centers));
+        }
         *virt_out = std::move(virt);
         if (knn_cache_out) {
             *knn_cache_out = std::move(cache);

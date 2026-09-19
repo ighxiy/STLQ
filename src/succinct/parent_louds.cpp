@@ -196,71 +196,40 @@ void ParentLOUDS::DecodeParent1Based(std::vector<uint32_t>* out, size_t n_out) c
 }
 
 ParentLOUDS::SequentialParentDecoder::SequentialParentDecoder(const ParentLOUDS& louds)
-    : louds_(&louds),
-      words_(&louds.bitvector().words()),
-      n_bits_(static_cast<size_t>(louds.bitvector().n_bits())),
-      n_nodes_(static_cast<uint32_t>(louds.n_nodes())) {}
-
-void ParentLOUDS::SequentialParentDecoder::AdvanceToNextRun_() {
-  if (!louds_ || !words_) {
-    throw std::runtime_error("ParentLOUDS::SequentialParentDecoder: uninitialized");
-  }
-  while (run_remaining_ == 0) {
-    while (z_ == 0ull) {
-      if (wi_ >= words_->size()) {
-        throw std::runtime_error("ParentLOUDS::SequentialParentDecoder: exhausted LOUDS zeros");
-      }
-      uint64_t w = (*words_)[wi_];
-      uint64_t mask = ~0ull;
-      const size_t base = wi_ * 64ull;
-      if (base + 64ull > n_bits_) {
-        const auto tail = static_cast<uint32_t>(n_bits_ - base);
-        mask = (tail == 64u) ? ~0ull : ((1ull << tail) - 1ull);
-        w &= mask;
-      }
-      z_ = (~w) & mask;
-      if (z_ == 0ull) {
-        ++wi_;
-      }
-    }
-
-    if (node_id_ > n_nodes_) {
-      throw std::runtime_error("ParentLOUDS::SequentialParentDecoder: zero count mismatch");
-    }
-
-    const size_t base = wi_ * 64ull;
-    const uint32_t b = Ctz64NonZero(z_);
-    const auto zpos = static_cast<int64_t>(base + static_cast<size_t>(b));
-    const int64_t deg = zpos - prev_zero_ - 1;
-    if (deg < 0) {
-      throw std::runtime_error("ParentLOUDS::SequentialParentDecoder: negative degree");
-    }
-    prev_zero_ = zpos;
-    current_parent_ = node_id_;
-    ++node_id_;
-    z_ &= (z_ - 1ull);
-    if (z_ == 0ull) {
-      ++wi_;
-    }
-    run_remaining_ = static_cast<uint32_t>(deg);
-  }
-}
-
-uint32_t ParentLOUDS::SequentialParentDecoder::NextParent1Based() {
-  // Hot-path retrieval decodes only known in-cluster parent ranges from validated LOUDS blobs.
-  // if (next_child_ > n_nodes_) {
-  //   throw std::out_of_range("ParentLOUDS::SequentialParentDecoder: child index out of range");
-  // }
-  AdvanceToNextRun_();
-  --run_remaining_;
-  ++next_child_;
-  return current_parent_;
-}
+    : words_(&louds.bitvector().words()) {}
 
 void ParentLOUDS::SequentialParentDecoder::Skip(size_t n) {
-  for (size_t i = 0; i < n; ++i) {
-    (void)NextParent1Based();
+  while (n != 0) {
+    while (one_positions_ == 0) {
+      word_base_ = static_cast<uint64_t>(next_word_) * 64u;
+      one_positions_ = (*words_)[next_word_++];
+    }
+    const uint32_t available = detail::Popcount64(one_positions_);
+    const size_t consumed = std::min(n, static_cast<size_t>(available));
+    if (consumed == available) {
+      one_positions_ = 0;
+    } else {
+      for (size_t child = 0; child < consumed; ++child) {
+        one_positions_ &= one_positions_ - 1u;
+      }
+    }
+    n -= consumed;
+    emitted_children_ += static_cast<uint32_t>(consumed);
   }
+}
+
+void ParentLOUDS::SequentialParentDecoder::InitializeAfterValidatedRootPrefix(
+    size_t root_count) {
+  // A validated canonical stream starts with root_count one bits and the
+  // implicit-super-root zero delimiter. Position at the first linked child
+  // without enumerating that known prefix.
+  const uint64_t next_bit = static_cast<uint64_t>(root_count) + 1u;
+  const size_t word = static_cast<size_t>(next_bit >> 6u);
+  const uint32_t offset = static_cast<uint32_t>(next_bit & 63u);
+  word_base_ = static_cast<uint64_t>(word) * 64u;
+  one_positions_ = (*words_)[word] & (~uint64_t{0} << offset);
+  next_word_ = word + 1u;
+  emitted_children_ = static_cast<uint32_t>(root_count);
 }
 
 uint32_t ParentLOUDS::Parent1BasedOf(size_t pos) const {

@@ -172,7 +172,7 @@ bool ProcessBadClustersVirtualForTrain(const Config& config,
         if (k_virtual > 0) {
             const std::uint32_t seed =
                 static_cast<std::uint32_t>(config.train.seed + 1337 * cid + 17);
-            if (!AddVirtualRootsUmapReencodeClusterFromKnnTables(config.virtual_cfg,
+            if (!AddVirtualRootsReencodeClusterFromKnnTables(config.virtual_cfg,
                                                                 C_root,
                                                                 pre_root,
                                                                 nullptr,
@@ -296,6 +296,14 @@ bool BuildLinkageTwoCodebookVirtual(const LinkageBuildConfig& linkage_cfg,
                                  LinkageStructure* linkage,
                                  ColMajorMatrix<float>* R_full,
                                  std::string* error) {
+    if (linkage_cfg.reference_policy != "structured") {
+        if (error) {
+            *error = "Virtual roots and linkage reference_policy=" +
+                     linkage_cfg.reference_policy +
+                     " cannot be combined in the controlled reference-forest ablation.";
+        }
+        return false;
+    }
     (void)vcfg;
     if (!linkage || !base_real) {
         if (error) {

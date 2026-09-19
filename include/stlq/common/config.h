@@ -285,6 +285,19 @@ inline bool EffectiveCudaAllowTf32(const RuntimeConfig& cfg) {
 
 struct LinkageBuildConfig {
     bool enabled = true;
+    // Parent-reference construction used before residual encoding.
+    // - structured: radial inner-to-outer STLQ topology (production default).
+    // - nn_forest: one in-cluster HNSW nearest-neighbor reference per node,
+    //              followed by deterministic cycle/depth cuts.
+    // - random_forest: one deterministic uniform in-cluster reference per node,
+    //                  followed by the same cycle/depth cuts.
+    // - all_roots: no parent references; controlled w/o-linkage ablation that
+    //              still uses the ordinary linkage codec/evaluation pipeline.
+    // - causal_nn: nearest reference from the structured topology's admissible
+    //              inner/same-layer-processed candidate set; no cycle cuts.
+    // - causal_random: deterministic uniform reference from that same
+    //                  admissible candidate set; no cycle cuts.
+    std::string reference_policy = "structured";
     double root_percentile = 0.01;
     int num_layers = 16;
     int max_depth = 40;
@@ -296,6 +309,27 @@ struct LinkageBuildConfig {
     int ils_perturb_layers = 3;
     int seed = 38251450;
 };
+
+inline bool IsUnrestrictedReferenceForestPolicy(const std::string& policy) {
+    return policy == "nn_forest" || policy == "random_forest" || policy == "all_roots";
+}
+
+inline bool IsCausalSingleParentPolicy(const std::string& policy) {
+    return policy == "causal_nn" || policy == "causal_random";
+}
+
+inline bool IsSupportedReferencePolicy(const std::string& policy) {
+    return policy == "structured" ||
+           IsUnrestrictedReferenceForestPolicy(policy) ||
+           IsCausalSingleParentPolicy(policy);
+}
+
+inline bool IsSupportedTrainReferencePolicy(const std::string& policy) {
+    // The causal controls intentionally target final/base topology only. Init
+    // linkage has a separate batched root-code path and is not part of this
+    // parent-selection ablation.
+    return policy == "structured" || policy == "nn_forest" || policy == "random_forest";
+}
 
 struct TrainConfig {
     bool enabled = true;
@@ -454,6 +488,10 @@ struct BaseConfig {
 
 struct VirtualConfig {
     bool enabled = false;
+    // Synthetic-root anchor construction. "subkmeans" is ordinary Euclidean
+    // Lloyd k-means with arithmetic centroids; it is deliberately not spherical.
+    std::string anchor_policy = "umap";
+    int subkmeans_iters = 15;
     double virtual_ratio = 0.10;
     double good_fraction = 0.6;
     int min_virtual = 1;

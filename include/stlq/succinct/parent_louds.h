@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <stdexcept>
@@ -29,21 +30,14 @@ class ParentLOUDS {
 
     uint32_t NextParent1Based();
     void Skip(size_t n);
+    void InitializeAfterValidatedRootPrefix(size_t root_count);
 
    private:
-    void AdvanceToNextRun_();
-
-    const ParentLOUDS* louds_ = nullptr;
     const std::vector<uint64_t>* words_ = nullptr;
-    size_t n_bits_ = 0;
-    uint32_t n_nodes_ = 0;
-    size_t wi_ = 0;
-    uint64_t z_ = 0;
-    int64_t prev_zero_ = -1;
-    uint32_t node_id_ = 0;
-    uint32_t next_child_ = 1;
-    uint32_t current_parent_ = 0;
-    uint32_t run_remaining_ = 0;
+    size_t next_word_ = 0;
+    uint64_t one_positions_ = 0;
+    uint64_t word_base_ = 0;
+    uint32_t emitted_children_ = 0;
   };
 
   ParentLOUDS() = default;
@@ -103,3 +97,33 @@ class ParentLOUDS {
 
 }  // namespace succinct
 }  // namespace stlq
+
+#if defined(_MSC_VER)
+#define STLQ_PARENT_LOUDS_ALWAYS_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define STLQ_PARENT_LOUDS_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define STLQ_PARENT_LOUDS_ALWAYS_INLINE inline
+#endif
+
+namespace stlq::succinct {
+
+STLQ_PARENT_LOUDS_ALWAYS_INLINE
+uint32_t ParentLOUDS::SequentialParentDecoder::NextParent1Based() {
+  // Every one bit emits one child. If child j is zero-based and its one bit
+  // is at zero-based position p, then its one-based parent is p - j, the
+  // number of zero delimiters preceding that bit. The caller consumes only
+  // known node ranges from an already validated canonical stream.
+  while (one_positions_ == 0) {
+    word_base_ = static_cast<uint64_t>(next_word_) * 64u;
+    one_positions_ = (*words_)[next_word_++];
+  }
+  const uint32_t bit = detail::Ctz64NonZero(one_positions_);
+  one_positions_ &= one_positions_ - 1u;
+  return static_cast<uint32_t>(
+      word_base_ + bit - emitted_children_++);
+}
+
+}  // namespace stlq::succinct
+
+#undef STLQ_PARENT_LOUDS_ALWAYS_INLINE

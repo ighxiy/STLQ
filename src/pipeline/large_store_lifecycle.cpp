@@ -131,6 +131,13 @@ bool PrepareCodecStoreForEval(const CodecStoreLifecycleOptions& opts,
         return true;
     }
 
+    if (opts.has_codec_store && decision->hash_present &&
+        opts.reuse_existing_hash_mismatch) {
+        decision->reused_existing_hash_mismatch = true;
+        decision->needs_rebuild = false;
+        return true;
+    }
+
     decision->needs_rebuild = true;
     if (opts.protect_existing_outputs && std::filesystem::exists(opts.codec_meta_path)) {
         if (error) {

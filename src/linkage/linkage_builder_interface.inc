@@ -38,6 +38,110 @@ bool BuildLinkageOneInit(const LinkageBuildConfig& linkage_cfg,
         return false;
     }
 
+    if (!IsSupportedTrainReferencePolicy(linkage_cfg.reference_policy)) {
+        if (error) {
+            *error = "Unsupported train linkage reference policy: " +
+                     linkage_cfg.reference_policy;
+        }
+        return false;
+    }
+    if (IsUnrestrictedReferenceForestPolicy(linkage_cfg.reference_policy)) {
+        const int h0 = C_root.books.front().cols;
+        std::vector<std::vector<int>> clusters(static_cast<std::size_t>(h0));
+        for (int i = 0; i < n; ++i) {
+            const int code = static_cast<int>(base->B(0, i));
+            clusters[static_cast<std::size_t>(code)].push_back(i);
+        }
+        std::vector<LinkageStructure::Cluster> cluster_out(static_cast<std::size_t>(h0));
+        std::vector<std::uint8_t> cluster_used(static_cast<std::size_t>(h0), 0);
+        std::atomic<bool> ok{true};
+        std::string first_error;
+        std::mutex error_mutex;
+        std::atomic<std::uint64_t> cycle_cuts{0};
+        std::atomic<std::uint64_t> depth_cuts{0};
+
+#pragma omp parallel for schedule(dynamic)
+        for (int code = 0; code < h0; ++code) {
+            const auto& globals = clusters[static_cast<std::size_t>(code)];
+            const int count = static_cast<int>(globals.size());
+            if (count == 0 || !ok.load(std::memory_order_relaxed)) continue;
+            ColMajorMatrix<float> X_local(X.rows, count);
+            ColMajorMatrix<FullCode> B_local(base->B.rows, count);
+            ColMajorMatrix<float> a_local(base->a.rows, count);
+            for (int local = 0; local < count; ++local) {
+                const int global = globals[static_cast<std::size_t>(local)];
+                std::memcpy(X_local.Col(local), X.Col(global),
+                            sizeof(float) * static_cast<std::size_t>(X.rows));
+                std::memcpy(B_local.Col(local), base->B.Col(global),
+                            sizeof(FullCode) * static_cast<std::size_t>(base->B.rows));
+                std::memcpy(a_local.Col(local), base->a.Col(global),
+                            sizeof(float) * static_cast<std::size_t>(base->a.rows));
+            }
+            LinkageStructure::Cluster built;
+            ReferenceForest forest;
+            int ls_failures = 0;
+            std::string local_error;
+            const bool use_ils = linkage_cfg.use_ils && linkage_cfg.ils_rounds > 0 &&
+                                 linkage_cfg.ils_perturb_layers > 0;
+            const bool built_ok =
+                use_ils
+                    ? LinkageTwoCodebookReferenceForestOneCluster<true>(
+                          linkage_cfg, hnsw_cfg, code, X_local,
+                          C_root, precomp, C_root, precomp, precomp.G,
+                          &B_local, &a_local, &built, &ls_failures,
+                          nullptr, nullptr, &forest, &local_error)
+                    : LinkageTwoCodebookReferenceForestOneCluster<false>(
+                          linkage_cfg, hnsw_cfg, code, X_local,
+                          C_root, precomp, C_root, precomp, precomp.G,
+                          &B_local, &a_local, &built, &ls_failures,
+                          nullptr, nullptr, &forest, &local_error);
+            if (!built_ok) {
+                ok.store(false, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(error_mutex);
+                if (first_error.empty()) first_error = local_error;
+                continue;
+            }
+            cycle_cuts.fetch_add(static_cast<std::uint64_t>(forest.cycle_cuts),
+                                 std::memory_order_relaxed);
+            depth_cuts.fetch_add(static_cast<std::uint64_t>(forest.depth_cuts),
+                                 std::memory_order_relaxed);
+            for (int local = 0; local < count; ++local) {
+                const int global = globals[static_cast<std::size_t>(local)];
+                std::memcpy(base->B.Col(global), B_local.Col(local),
+                            sizeof(FullCode) * static_cast<std::size_t>(base->B.rows));
+                std::memcpy(base->a.Col(global), a_local.Col(local),
+                            sizeof(float) * static_cast<std::size_t>(base->a.rows));
+            }
+            for (int& local : built.indices) {
+                local = globals[static_cast<std::size_t>(local)];
+            }
+            cluster_out[static_cast<std::size_t>(code)] = std::move(built);
+            cluster_used[static_cast<std::size_t>(code)] = 1;
+        }
+        if (!ok.load(std::memory_order_relaxed)) {
+            if (error) *error = first_error.empty() ? "Reference-forest train linkage failed." : first_error;
+            return false;
+        }
+        linkage->clusters.clear();
+        linkage->max_depth = 0;
+        for (int code = 0; code < h0; ++code) {
+            if (!cluster_used[static_cast<std::size_t>(code)]) continue;
+            linkage->max_depth = std::max(
+                linkage->max_depth,
+                static_cast<int>(cluster_out[static_cast<std::size_t>(code)].depth_offsets.size()) - 2);
+            linkage->clusters.push_back(std::move(cluster_out[static_cast<std::size_t>(code)]));
+        }
+        if (R_full) {
+            *R_full = ComputeLinkagedReconstructionMultiBook(C_root, C_root,
+                                                             base->B, base->a,
+                                                             *linkage);
+        }
+        LogInfo("Reference forest train (" + linkage_cfg.reference_policy +
+                "): cycle_cuts=" + std::to_string(cycle_cuts.load()) +
+                ", depth_cuts=" + std::to_string(depth_cuts.load()));
+        return true;
+    }
+
     if (linkage_cfg.use_ils && linkage_cfg.ils_rounds > 0 && linkage_cfg.ils_perturb_layers > 0) {
         LinkageFromInnerToOuterOneCodebookImpl<true>(linkage_cfg, hnsw_cfg, X, C_root, precomp,
                                                    &base->B, &base->a,
@@ -108,6 +212,112 @@ bool BuildLinkageTwoCodebook(const LinkageBuildConfig& linkage_cfg,
         int code = static_cast<int>((base->B)(0, i));
         // if (code < 0 || code >= h0) continue;
         clusters[static_cast<std::size_t>(code)].push_back(i);
+    }
+
+    if (!IsSupportedReferencePolicy(linkage_cfg.reference_policy)) {
+        if (error) {
+            *error = "Unsupported base linkage reference policy: " +
+                     linkage_cfg.reference_policy;
+        }
+        return false;
+    }
+    if (IsUnrestrictedReferenceForestPolicy(linkage_cfg.reference_policy)) {
+        ColMajorMatrix<float> G_one_root;
+        {
+            ScopedBlasThreads blas_scope(std::max(1, omp_get_max_threads()));
+            G_one_root = BuildOneRootCrossGram(pre_one, pre_root);
+        }
+        std::vector<LinkageStructure::Cluster> cluster_out(static_cast<std::size_t>(h0));
+        std::vector<std::uint8_t> cluster_used(static_cast<std::size_t>(h0), 0);
+        std::atomic<bool> ok{true};
+        std::string first_error;
+        std::mutex error_mutex;
+        std::atomic<std::uint64_t> cycle_cuts{0};
+        std::atomic<std::uint64_t> depth_cuts{0};
+
+#pragma omp parallel for schedule(dynamic)
+        for (int code = 0; code < h0; ++code) {
+            const auto& globals = clusters[static_cast<std::size_t>(code)];
+            const int count = static_cast<int>(globals.size());
+            if (count == 0 || !ok.load(std::memory_order_relaxed)) continue;
+
+            ColMajorMatrix<float> X_local(X.rows, count);
+            ColMajorMatrix<FullCode> B_local(base->B.rows, count);
+            ColMajorMatrix<float> a_local(base->a.rows, count);
+            for (int local = 0; local < count; ++local) {
+                const int global = globals[static_cast<std::size_t>(local)];
+                std::memcpy(X_local.Col(local), X.Col(global),
+                            sizeof(float) * static_cast<std::size_t>(X.rows));
+                std::memcpy(B_local.Col(local), base->B.Col(global),
+                            sizeof(FullCode) * static_cast<std::size_t>(base->B.rows));
+                std::memcpy(a_local.Col(local), base->a.Col(global),
+                            sizeof(float) * static_cast<std::size_t>(base->a.rows));
+            }
+
+            LinkageStructure::Cluster built;
+            ReferenceForest forest;
+            int ls_failures = 0;
+            std::string local_error;
+            const bool use_ils = linkage_cfg.use_ils && linkage_cfg.ils_rounds > 0 &&
+                                 linkage_cfg.ils_perturb_layers > 0;
+            const bool built_ok =
+                use_ils
+                    ? LinkageTwoCodebookReferenceForestOneCluster<true>(
+                          linkage_cfg, hnsw_cfg, code, X_local,
+                          C_root, pre_root, C_one, pre_one, G_one_root,
+                          &B_local, &a_local, &built, &ls_failures,
+                          nullptr, nullptr, &forest, &local_error)
+                    : LinkageTwoCodebookReferenceForestOneCluster<false>(
+                          linkage_cfg, hnsw_cfg, code, X_local,
+                          C_root, pre_root, C_one, pre_one, G_one_root,
+                          &B_local, &a_local, &built, &ls_failures,
+                          nullptr, nullptr, &forest, &local_error);
+            if (!built_ok) {
+                ok.store(false, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(error_mutex);
+                if (first_error.empty()) first_error = local_error;
+                continue;
+            }
+            cycle_cuts.fetch_add(static_cast<std::uint64_t>(forest.cycle_cuts),
+                                 std::memory_order_relaxed);
+            depth_cuts.fetch_add(static_cast<std::uint64_t>(forest.depth_cuts),
+                                 std::memory_order_relaxed);
+            for (int local = 0; local < count; ++local) {
+                const int global = globals[static_cast<std::size_t>(local)];
+                std::memcpy(base->B.Col(global), B_local.Col(local),
+                            sizeof(FullCode) * static_cast<std::size_t>(base->B.rows));
+                std::memcpy(base->a.Col(global), a_local.Col(local),
+                            sizeof(float) * static_cast<std::size_t>(base->a.rows));
+            }
+            for (int& local : built.indices) {
+                local = globals[static_cast<std::size_t>(local)];
+            }
+            cluster_out[static_cast<std::size_t>(code)] = std::move(built);
+            cluster_used[static_cast<std::size_t>(code)] = 1;
+        }
+        if (!ok.load(std::memory_order_relaxed)) {
+            if (error) *error = first_error.empty() ? "Reference-forest linkage failed." : first_error;
+            return false;
+        }
+
+        linkage->clusters.clear();
+        linkage->max_depth = 0;
+        for (int code = 0; code < h0; ++code) {
+            if (!cluster_used[static_cast<std::size_t>(code)]) continue;
+            linkage->max_depth = std::max(
+                linkage->max_depth,
+                static_cast<int>(cluster_out[static_cast<std::size_t>(code)].depth_offsets.size()) - 2);
+            linkage->clusters.push_back(std::move(cluster_out[static_cast<std::size_t>(code)]));
+        }
+        if (R_full) {
+            *R_full = ComputeLinkagedReconstructionMultiBook(C_root, C_one,
+                                                             base->B, base->a,
+                                                             *linkage);
+        }
+        LogInfo("Reference forest (" + linkage_cfg.reference_policy +
+                "): cycle_cuts=" + std::to_string(cycle_cuts.load()) +
+                ", depth_cuts=" + std::to_string(depth_cuts.load()));
+        return true;
     }
 
     if (linkage_cfg.use_ils && linkage_cfg.ils_rounds > 0 && linkage_cfg.ils_perturb_layers > 0) {

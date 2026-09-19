@@ -1060,6 +1060,101 @@ void PartitionClusterLayers(const std::vector<float>& cos_angles,
     }
 }
 
+inline std::uint64_t CausalReferenceSelectionKey(int seed,
+                                                 int cluster_id,
+                                                 int node_local) {
+    std::uint64_t x = static_cast<std::uint32_t>(seed);
+    x ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(cluster_id)) << 32U;
+    x ^= static_cast<std::uint64_t>(static_cast<std::uint32_t>(node_local)) *
+         0x9e3779b97f4a7c15ULL;
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27U)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31U);
+}
+
+// Reduce the structured topology's admissible candidate set to one parent.
+// This happens after radial/same-layer causal filtering but before residual
+// evaluation. Depth-ineligible candidates are excluded, so the chosen parent
+// is always a legal edge. The stateless random key deliberately does not
+// consume the ICM/ILS random stream.
+inline void SelectOneCausalReference(const std::string& policy,
+                                     std::uint64_t selection_key,
+                                     const float* query,
+                                     const ColMajorMatrix<float>& X,
+                                     const std::vector<int>& cluster_indices,
+                                     const std::vector<int>& parent_depth,
+                                     int max_depth,
+                                     std::vector<int>* first,
+                                     std::vector<int>* second = nullptr) {
+    if (!IsCausalSingleParentPolicy(policy)) return;
+
+    const auto FilterDepth = [&](std::vector<int>* candidates) {
+        if (!candidates) return;
+        std::size_t keep = 0;
+        for (int candidate : *candidates) {
+            if (candidate < 0 ||
+                candidate >= static_cast<int>(parent_depth.size()) ||
+                parent_depth[static_cast<std::size_t>(candidate)] + 1 > max_depth) {
+                continue;
+            }
+            (*candidates)[keep++] = candidate;
+        }
+        candidates->resize(keep);
+    };
+    FilterDepth(first);
+    FilterDepth(second);
+
+    const std::size_t first_size = first ? first->size() : 0u;
+    const std::size_t second_size = second ? second->size() : 0u;
+    const std::size_t total = first_size + second_size;
+    if (total == 0u) return;
+
+    int chosen = -1;
+    bool chosen_from_first = false;
+    if (policy == "causal_random") {
+        const std::size_t pick = static_cast<std::size_t>(selection_key % total);
+        chosen_from_first = pick < first_size;
+        chosen = chosen_from_first
+                     ? (*first)[pick]
+                     : (*second)[pick - first_size];
+    } else {
+        float best_distance = std::numeric_limits<float>::infinity();
+        const auto Consider = [&](const std::vector<int>* candidates,
+                                  bool from_first) {
+            if (!candidates) return;
+            for (int candidate : *candidates) {
+                const int global = cluster_indices[static_cast<std::size_t>(candidate)];
+                const float* parent = X.Col(global);
+                float distance = 0.0f;
+#pragma omp simd reduction(+:distance)
+                for (int r = 0; r < X.rows; ++r) {
+                    const float diff = query[r] - parent[r];
+                    distance += diff * diff;
+                }
+                if (distance < best_distance ||
+                    (distance == best_distance &&
+                     (chosen < 0 || candidate < chosen))) {
+                    best_distance = distance;
+                    chosen = candidate;
+                    chosen_from_first = from_first;
+                }
+            }
+        };
+        Consider(first, true);
+        Consider(second, false);
+    }
+
+    if (first) first->clear();
+    if (second) second->clear();
+    if (chosen < 0) return;
+    if (chosen_from_first || !second) {
+        first->push_back(chosen);
+    } else {
+        second->push_back(chosen);
+    }
+}
+
 void QueryCandidatesHnsw(const ClusterHnswIndex& index,
                          const float* query,
                          const std::vector<int>& cluster_indices,

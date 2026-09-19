@@ -178,6 +178,7 @@ add_library(stlq_core
     src/quantizer/update_codebooks_streaming.cpp
     src/linkage/virtual_augment.cpp
     src/linkage/hnsw_cluster_knn.cpp
+    src/linkage/reference_forest.cpp
     src/linkage/linkage_builder.cpp
     src/linkage/linkage_base_streaming_builder.cpp
     src/linkage/linkage_coeff_codec_rebuild.cpp
@@ -497,12 +498,21 @@ add_executable(report_stlq_oracle_rerank cmd/report_stlq_oracle_rerank.cpp)
 target_link_libraries(report_stlq_oracle_rerank PRIVATE stlq_core)
 stlq_apply_lto(report_stlq_oracle_rerank)
 
+add_executable(bench_stlq_exact_rerank cmd/bench_stlq_exact_rerank.cpp)
+target_link_libraries(bench_stlq_exact_rerank PRIVATE stlq_core)
+stlq_apply_lto(bench_stlq_exact_rerank)
+
 add_executable(report_linkage_int8_recon_mse cmd/report_linkage_int8_recon_mse.cpp)
 target_link_libraries(report_linkage_int8_recon_mse PRIVATE stlq_core)
 stlq_apply_lto(report_linkage_int8_recon_mse)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(test_reference_forest_and_subkmeans tests/test_reference_forest_and_subkmeans.cpp)
+    target_link_libraries(test_reference_forest_and_subkmeans PRIVATE stlq_core)
+    stlq_apply_lto(test_reference_forest_and_subkmeans)
+    add_test(NAME test_reference_forest_and_subkmeans COMMAND test_reference_forest_and_subkmeans)
+
     add_executable(stlq_io_probe tests/checks/io_probe.cpp)
     target_link_libraries(stlq_io_probe PRIVATE stlq_core)
     stlq_apply_lto(stlq_io_probe)

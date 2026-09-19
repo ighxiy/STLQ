@@ -1087,6 +1087,10 @@ namespace stlq
             return ParseInt(v, &config->train.seed);
         }
         // Train-time linkage build parameters (preferred: train.linkage.*).
+        if (key == "train.linkage.reference_policy") {
+            config->train.linkage.reference_policy = StripQuotes(v);
+            return true;
+        }
         if (key == "train.linkage.root_percentile") {
             return ParseDouble(v, &config->train.linkage.root_percentile);
         }
@@ -1161,6 +1165,10 @@ namespace stlq
         if (key == "base.linkage.enabled") {
             return ParseBool(v, &config->base.linkage.enabled);
         }
+        if (key == "base.linkage.reference_policy") {
+            config->base.linkage.reference_policy = StripQuotes(v);
+            return true;
+        }
         if (key == "base.linkage.root_percentile") {
             return ParseDouble(v, &config->base.linkage.root_percentile);
         }
@@ -1205,6 +1213,13 @@ namespace stlq
         }
         if (key == "virtual.enabled") {
             return ParseBool(v, &config->virtual_cfg.enabled);
+        }
+        if (key == "virtual.anchor_policy") {
+            config->virtual_cfg.anchor_policy = StripQuotes(v);
+            return true;
+        }
+        if (key == "virtual.subkmeans_iters") {
+            return ParseInt(v, &config->virtual_cfg.subkmeans_iters);
         }
         if (key == "virtual.virtual_ratio") {
             return ParseDouble(v, &config->virtual_cfg.virtual_ratio);
@@ -1870,6 +1885,7 @@ namespace stlq
         out << "train.encode_only_after_layer = " << (config.train.encode_only_after_layer ? "true" : "false") << "\n";
 
         out << "train.seed = " << config.train.seed << "\n";
+        out << "train.linkage.reference_policy = \"" << config.train.linkage.reference_policy << "\"\n";
         out << "train.linkage.root_percentile = " << config.train.linkage.root_percentile << "\n";
         out << "train.linkage.num_layers = " << config.train.linkage.num_layers << "\n";
         out << "train.linkage.max_depth = " << config.train.linkage.max_depth << "\n";
@@ -1895,6 +1911,7 @@ namespace stlq
         out << "base.encode.seed = " << config.base.encode.seed << "\n";
 
         out << "base.linkage.enabled = " << (config.base.linkage.enabled ? "true" : "false") << "\n";
+        out << "base.linkage.reference_policy = \"" << config.base.linkage.reference_policy << "\"\n";
         out << "base.linkage.root_percentile = " << config.base.linkage.root_percentile << "\n";
         out << "base.linkage.num_layers = " << config.base.linkage.num_layers << "\n";
         out << "base.linkage.max_depth = " << config.base.linkage.max_depth << "\n";
@@ -1911,6 +1928,8 @@ namespace stlq
         out << "hnsw.ef_construction_cap = " << config.hnsw.ef_construction_cap << "\n";
 
         out << "virtual.enabled = " << (config.virtual_cfg.enabled ? "true" : "false") << "\n";
+        out << "virtual.anchor_policy = \"" << config.virtual_cfg.anchor_policy << "\"\n";
+        out << "virtual.subkmeans_iters = " << config.virtual_cfg.subkmeans_iters << "\n";
         out << "virtual.virtual_ratio = " << config.virtual_cfg.virtual_ratio << "\n";
         out << "virtual.good_fraction = " << config.virtual_cfg.good_fraction << "\n";
         out << "virtual.min_virtual = " << config.virtual_cfg.min_virtual << "\n";
@@ -2111,6 +2130,7 @@ namespace stlq
 
                 // ComputeLinkageListStoreHash inputs (Config portion).
                 "model.h0_one",
+                "base.linkage.reference_policy",
                 "base.linkage.root_percentile",
                 "base.linkage.num_layers",
                 "base.linkage.max_depth",
@@ -2122,6 +2142,8 @@ namespace stlq
                 "base.linkage.ils_perturb_layers",
                 "base.linkage.seed",
                 "virtual.enabled",
+                "virtual.anchor_policy",
+                "virtual.subkmeans_iters",
                 "virtual.virtual_ratio",
                 "virtual.good_fraction",
                 "virtual.min_virtual",

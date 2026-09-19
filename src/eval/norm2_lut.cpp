@@ -494,7 +494,8 @@ bool ReadSourceHashForLutCache(const io::LinkageListReader& linkage_list,
     return app::ReadNorm2SourceHash(linkage_list.dir(), use_coeff_codec, out_hash);
 }
 
-std::uint64_t ComputeNorm2LutCacheHash(const io::LinkageListReader& linkage_list,
+std::uint64_t ComputeNorm2LutCacheHashWithIdentity(
+                                       const io::LinkageListReader& linkage_list,
                                        bool use_coeff_codec,
                                        int requested_centers,
                                        int kmeans_niter,
@@ -504,13 +505,18 @@ std::uint64_t ComputeNorm2LutCacheHash(const io::LinkageListReader& linkage_list
                                        double piecewise_p1,
                                        double piecewise_p2,
                                        double piecewise_count_weight,
-                                       double piecewise_range_weight) {
+                                       double piecewise_range_weight,
+                                       bool legacy_chain_identity) {
     std::uint64_t source_hash = 0;
-    if (!ReadSourceHashForLutCache(linkage_list, use_coeff_codec, &source_hash)) {
+    const bool source_ok = legacy_chain_identity
+        ? app::ReadLegacyChainNorm2SourceHash(linkage_list.dir(), use_coeff_codec, &source_hash)
+        : ReadSourceHashForLutCache(linkage_list, use_coeff_codec, &source_hash);
+    if (!source_ok) {
         return 0;
     }
     Hash64 hh;
-    hh.AddStr("linkage_norm2_lut_cache_v1");
+    hh.AddStr(legacy_chain_identity ? "chain_norm2_lut_cache_v1"
+                                    : "linkage_norm2_lut_cache_v1");
     hh.AddStr(mode_tag ? std::string(mode_tag) : std::string());
     hh.AddStr(disk_norm2_mode);
     hh.AddU64(source_hash);
@@ -525,6 +531,65 @@ std::uint64_t ComputeNorm2LutCacheHash(const io::LinkageListReader& linkage_list
         hh.AddBytes(&piecewise_count_weight, sizeof(piecewise_count_weight));
         hh.AddBytes(&piecewise_range_weight, sizeof(piecewise_range_weight));
     }
+    return hh.h;
+}
+
+std::uint64_t ComputeNorm2LutCacheHash(const io::LinkageListReader& linkage_list,
+                                       bool use_coeff_codec,
+                                       int requested_centers,
+                                       int kmeans_niter,
+                                       const char* mode_tag,
+                                       const std::string& disk_norm2_mode,
+                                       double log1p_alpha,
+                                       double piecewise_p1,
+                                       double piecewise_p2,
+                                       double piecewise_count_weight,
+                                       double piecewise_range_weight) {
+    return ComputeNorm2LutCacheHashWithIdentity(
+        linkage_list, use_coeff_codec, requested_centers, kmeans_niter, mode_tag,
+        disk_norm2_mode, log1p_alpha, piecewise_p1, piecewise_p2,
+        piecewise_count_weight, piecewise_range_weight, false);
+}
+
+std::uint64_t ComputeLegacyChainNorm2LutCacheHash(
+                                       const io::LinkageListReader& linkage_list,
+                                       bool use_coeff_codec,
+                                       int requested_centers,
+                                       int kmeans_niter,
+                                       const char* mode_tag,
+                                       const std::string& disk_norm2_mode,
+                                       double log1p_alpha,
+                                       double piecewise_p1,
+                                       double piecewise_p2,
+                                       double piecewise_count_weight,
+                                       double piecewise_range_weight) {
+    return ComputeNorm2LutCacheHashWithIdentity(
+        linkage_list, use_coeff_codec, requested_centers, kmeans_niter, mode_tag,
+        disk_norm2_mode, log1p_alpha, piecewise_p1, piecewise_p2,
+        piecewise_count_weight, piecewise_range_weight, true);
+}
+
+// CHAINLST archives written before the multi-mode norm2 LUT extension did not
+// include disk_norm2_mode (or transform parameters) in the cache identity.
+// Keep this exact compatibility hash separate from the newer pre-rename hash:
+// it is valid only for the original plain LUT representation.
+std::uint64_t ComputeLegacyPlainChainNorm2LutCacheHash(
+                                       const io::LinkageListReader& linkage_list,
+                                       bool use_coeff_codec,
+                                       int requested_centers,
+                                       int kmeans_niter,
+                                       const char* mode_tag) {
+    std::uint64_t source_hash = 0;
+    if (!app::ReadLegacyChainNorm2SourceHash(
+            linkage_list.dir(), use_coeff_codec, &source_hash)) {
+        return 0;
+    }
+    Hash64 hh;
+    hh.AddStr("chain_norm2_lut_cache_v1");
+    hh.AddStr(mode_tag ? std::string(mode_tag) : std::string());
+    hh.AddU64(source_hash);
+    hh.AddI32(std::max(1, requested_centers));
+    hh.AddI32(std::max(1, kmeans_niter));
     return hh.h;
 }
 
@@ -806,12 +871,22 @@ Norm2LutDiskLoadResult CheckNorm2LutCache(const io::LinkageListReader& linkage_l
                                  mode, log1p_alpha,
                                  piecewise_p1, piecewise_p2,
                                  piecewise_count_weight, piecewise_range_weight);
-    if (expected_hash == 0) {
+    const std::uint64_t legacy_hash =
+        ComputeLegacyChainNorm2LutCacheHash(
+            linkage_list, use_coeff_codec, requested_centers, kmeans_niter, "lut",
+            mode, log1p_alpha, piecewise_p1, piecewise_p2,
+            piecewise_count_weight, piecewise_range_weight);
+    const std::uint64_t legacy_plain_hash = mode == "lut"
+        ? ComputeLegacyPlainChainNorm2LutCacheHash(
+              linkage_list, use_coeff_codec, requested_centers, kmeans_niter, "lut")
+        : 0;
+    if (expected_hash == 0 && legacy_hash == 0 && legacy_plain_hash == 0) {
         if (err) *err = use_coeff_codec ? "missing linkage_list/hash.u64 or coeff_hash.u64"
                                         : "missing linkage_list/hash.u64";
         return Norm2LutDiskLoadResult::kInvalid;
     }
-    if (cache_hash != expected_hash) {
+    if (cache_hash != expected_hash && cache_hash != legacy_hash &&
+        cache_hash != legacy_plain_hash) {
         if (err) {
             *err = "norm2 LUT hash mismatch (check eval.disk_norm2_mode, "
                    "eval.disk_norm2_lut_kmeans_niter, eval.disk_norm2_lut_log_alpha, and piecewise params)";
@@ -1138,12 +1213,22 @@ Norm2LutDiskLoadResult CheckNorm2LutClusterCache(const io::LinkageListReader& li
         ComputeNorm2LutCacheHash(linkage_list, use_coeff_codec, requested_centers, kmeans_niter,
                                  "lut_cluster", "lut_cluster", 1.0,
                                  0.99, 0.999, 0.5, 0.5);
-    if (expected_hash == 0) {
+    const std::uint64_t legacy_hash =
+        ComputeLegacyChainNorm2LutCacheHash(
+            linkage_list, use_coeff_codec, requested_centers, kmeans_niter,
+            "lut_cluster", "lut_cluster", 1.0,
+            0.99, 0.999, 0.5, 0.5);
+    const std::uint64_t legacy_plain_hash =
+        ComputeLegacyPlainChainNorm2LutCacheHash(
+            linkage_list, use_coeff_codec, requested_centers, kmeans_niter,
+            "lut_cluster");
+    if (expected_hash == 0 && legacy_hash == 0 && legacy_plain_hash == 0) {
         if (err) *err = use_coeff_codec ? "missing linkage_list/hash.u64 or coeff_hash.u64"
                                         : "missing linkage_list/hash.u64";
         return Norm2LutDiskLoadResult::kInvalid;
     }
-    if (cache_hash != expected_hash) {
+    if (cache_hash != expected_hash && cache_hash != legacy_hash &&
+        cache_hash != legacy_plain_hash) {
         if (err) *err = "norm2 LUT hash mismatch (check eval.disk_norm2_lut_kmeans_niter)";
         return Norm2LutDiskLoadResult::kInvalid;
     }

@@ -21,10 +21,12 @@
 
 #include "stlq/linkage/linkage_build_profile.h"
 #include "stlq/linkage/linkage_finalize.h"
+#include "stlq/linkage/linkage_reconstruction.h"
 #include "stlq/core/blas.h"
 #include "stlq/core/lapack.h"
 #include "stlq/common/logger.h"
 #include "stlq/knn/hnsw_cluster_knn.h"
+#include "stlq/linkage/reference_forest.h"
 #include "stlq/quantizer/encoder.h"
 #include "stlq/quantizer/linear_algebra.h"
 #if defined(STLQ_ENABLE_CUDA)
@@ -40,6 +42,7 @@ namespace {
 #include "linkage_builder_common.inc"
 #include "linkage_builder_one_for_init.inc"
 #include "linkage_builder_two_inner_to_outer.inc"
+#include "linkage_reference_forest_builder.inc"
 #include "linkage_builder_two_multicenter.inc"
 }
 
